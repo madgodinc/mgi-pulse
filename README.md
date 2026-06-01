@@ -2,8 +2,6 @@
 
 A local-only TUI navigator for NDJSON logs. Not browse logs, navigate them.
 
-![demo](docs/demo.gif)
-
 ## Why
 
 Most log tools either tail text (`less`, `tail -F`) or ship a pipeline (Loki,
@@ -17,12 +15,22 @@ severity.
 
 ## Install
 
+**Pre-built Linux x86_64 binary** (musl-static, no runtime deps):
+
 ```sh
-cargo install --git https://github.com/madgodinc/mgi-pulse pulse-tui
+curl -L https://github.com/madgodinc/mgi-pulse/releases/latest/download/mgi-pulse-v0.1.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+./mgi-pulse --help
 ```
 
-Pre-built Linux musl binaries will land with the v0.1.0 GitHub Release.
-macOS and Windows builds are CI-checked but not shipped yet.
+**Build from source** (any Rust toolchain ≥ 1.83):
+
+```sh
+cargo install --git https://github.com/madgodinc/mgi-pulse mgi-pulse
+```
+
+macOS and Windows builds are CI-checked on each commit but pre-built
+binaries for those platforms are not shipped yet — build from source
+on those platforms for now.
 
 ## Quickstart
 
@@ -56,8 +64,8 @@ NDJSON.
 - k-way merge of multiple NDJSON files by timestamp.
 - Schema inference over the first 10k records, with auto-derived columns.
 - Filters: regex, `field=value`, severity (strict or `min+`), composed with AND.
-- Five tabs at startup: `All`, `Error+`, `Warn`, `Info`, `Debug`. `Ctrl-T`
-  opens a fresh `All` tab; `Ctrl-W` closes the active one.
+- Five tabs at startup: `All`, `Error`, `Warn`, `Info`, `Debug+Trace`.
+  `Ctrl-T` opens a fresh `All` tab; `Ctrl-W` closes the active one.
 - Timeline pane: overview histogram, severity-coloured stacked bars.
 - Detail pane: pretty-printed record under the cursor.
 - Status bar surfaces parse errors and untimed-record counts.
@@ -135,8 +143,8 @@ away.
   parse. logfmt, plain text with regex extraction, CEE/syslog — not yet.
 - **EDN logs (Clojure).** EDN looks JSON-shaped to the eye (`{:ts "..."
   :level :error :msg "..."}`) but is not JSON, so `mgi-pulse` currently
-  drops to less-mode on EDN streams. Planned for v0.2 — track it in the
-  EDN support issue.
+  drops to less-mode on EDN streams. Planned for v0.2 — tracked in
+  [#1](https://github.com/madgodinc/mgi-pulse/issues/1).
 - **Stack-trace folding.** Multi-line Go / Rust / Java tracebacks are not
   collapsed into one row.
 - **Themes.** Colours are fixed (severity-coded).
