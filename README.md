@@ -63,7 +63,7 @@ opens the query DSL, `f` opens a `field=value` filter, `t` jumps to a
 timestamp, `d` toggles the detail pane, `b` bookmarks the focused row,
 `q` quits.
 
-![Detail pane open on a record — pretty-printed JSON beside the table](docs/screenshots/02-detail-pane.png)
+![Split view: the table on the left stays scrollable while the detail pane on the right shows the focused record with every field pretty-printed (level, logger, msg, payload, request_id, ts)](docs/screenshots/02-detail-pane.png)
 
 ### Query DSL
 
