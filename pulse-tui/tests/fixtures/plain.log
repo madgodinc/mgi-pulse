@@ -1,0 +1,5 @@
+2026-06-01 12:00:00.123 INFO  [my.app] - Server started on port 8080
+2026-06-01 12:00:01.456 DEBUG [my.app.db] - Connecting to postgres
+2026-06-01 12:00:02.789 ERROR [my.app.handler] - DB timeout
+2026-06-01 12:00:03.012 WARN  [my.app.metrics] - Queue depth above watermark
+2026-06-01 12:00:04.345 INFO  [my.app] - Health check OK

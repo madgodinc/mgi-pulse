@@ -1,0 +1,4 @@
+{"ts":"2026-06-01T12:00:00Z","level":"info","logger":"app","msg":"start"}
+{"ts":"2026-06-01T12:00:01Z","level":"warn","logger":"app","msg":"slow"}
+{"ts":"2026-06-01T12:00:02Z","level":"error","logger":"app","msg":"boom"}
+{"ts":"2026-06-01T12:00:03Z","level":"info","logger":"app","msg":"done"}

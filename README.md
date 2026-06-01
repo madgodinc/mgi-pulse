@@ -94,7 +94,36 @@ Mouse capture is on by default so the wheel scrolls the table and you can
 click tabs. That intercepts text selection too — to copy a line, hold
 **Shift** while you drag the mouse and the terminal handles the selection
 directly. (Standard TUI convention, works in WezTerm, Alacritty,
-GNOME-Terminal, Konsole, iTerm2.)
+GNOME-Terminal, Konsole, iTerm2.) Pass `--no-mouse` to disable capture
+entirely if you need the unmodified terminal selection back — useful over
+SSH or with a copy-on-select setup.
+
+### Static files vs live files (mmap safety)
+
+`mgi-pulse` `mmap`s files for speed. **This is safe for static log
+snapshots but unsafe for files that another process may truncate or
+replace while you're viewing them** — reading past a truncated mmap
+region delivers SIGBUS to the process, killing it. That's a Unix
+mechanic, not a Rust error, so we can't catch it.
+
+Two rules of thumb:
+
+- **Static / archived logs:** open them directly. `mgi-pulse app.log`,
+  `mgi-pulse error.log.1`, `mgi-pulse 2026-06-01.ndjson` — all safe.
+- **Active / live logs:** **don't open them as files**. Pipe instead:
+
+  ```sh
+  tail -F /var/log/app.log | mgi-pulse -
+  ```
+
+  `tail -F` survives rotation and feeds `mgi-pulse` via stdin, which
+  uses owned buffers (no mmap) and is robust to whatever the writer
+  does to the file underneath.
+
+If you can't tell whether the file is live, copy it first
+(`cp app.log /tmp/snap.ndjson && mgi-pulse /tmp/snap.ndjson`). v0.2 will
+ship a native follow mode (inotify / kqueue) so this footnote goes
+away.
 
 ## What it doesn't do (yet)
 

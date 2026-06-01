@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use mgi_pulse_core::engine::parse::FieldNames;
 use mgi_pulse_core::engine::{indexer, Engine};
 use mgi_pulse_core::io::file::FileProducer;
 use mgi_pulse_core::io::merge::MergeProducer;
@@ -23,6 +24,12 @@ use mgi_pulse_core::io::stream::StreamProducer;
 use mgi_pulse_core::io::RecordProducer;
 
 /// mgi-pulse — not browse logs, navigate them.
+///
+/// Opens NDJSON files via mmap for speed. Safe for static log snapshots.
+/// For active logs that another process may rotate or truncate, pipe
+/// instead: `tail -F file | mgi-pulse -`. Reading an mmap'd file that
+/// gets truncated under us delivers SIGBUS (kills the process), which
+/// the stream path avoids by using owned buffers.
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -39,6 +46,24 @@ struct Cli {
     /// or when copying via mouse without modifier).
     #[arg(long, default_value_t = false)]
     no_mouse: bool,
+
+    /// JSON field name to read as the record timestamp. Default `ts`. Use
+    /// `--time-field=@timestamp` for ECS-shaped logs, `--time-field=@t` for
+    /// Serilog, `--time-field=eventTime` for k8s audit, etc.
+    #[arg(long, value_name = "FIELD")]
+    time_field: Option<String>,
+
+    /// JSON field name to read as the severity level. Default `level`. Use
+    /// `--level-field=severity_text` for OTel, `--level-field=severity` for
+    /// GCP, etc.
+    #[arg(long, value_name = "FIELD")]
+    level_field: Option<String>,
+
+    /// Maximum number of auto-derived columns to show. Default unbounded
+    /// (capped by terminal width). Useful when you have a wide schema and
+    /// want to focus on the most-present fields.
+    #[arg(long, value_name = "N")]
+    columns: Option<usize>,
 
     /// Deprecated legacy flag. Mouse is on by default now; pass
     /// `--no-mouse` to disable.
@@ -75,12 +100,28 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Build the override field-names from CLI flags. Defaults to None so
+    // the fast hardcoded path is used unless a flag was passed.
+    let fields = match (cli.time_field.clone(), cli.level_field.clone()) {
+        (None, None) => None,
+        _ => {
+            let mut f = FieldNames::default();
+            if let Some(t) = cli.time_field.clone() {
+                f.ts = t;
+            }
+            if let Some(l) = cli.level_field.clone() {
+                f.level = l;
+            }
+            Some(f)
+        }
+    };
+
     let mut engine = Engine::new();
     let source_label: String;
 
     if cli.files.is_empty() {
         source_label = "<stdin>".to_string();
-        ingest_stdin(&mut engine)?;
+        ingest_stdin(&mut engine, fields.clone())?;
     } else {
         // Single file: fast path that keeps line_id == arrival order.
         // Multiple files: k-way merge by ts_micros — line_id becomes
@@ -100,10 +141,10 @@ fn run() -> Result<()> {
             let path = &cli.files[0];
             if path.as_os_str() == "-" {
                 source_label = "<stdin>".to_string();
-                ingest_stdin(&mut engine)?;
+                ingest_stdin(&mut engine, fields.clone())?;
             } else {
                 source_label = path.display().to_string();
-                ingest_file(path, &mut engine)?;
+                ingest_file(path, &mut engine, fields.clone())?;
             }
         } else {
             // Multi-file merge.
@@ -113,7 +154,7 @@ fn run() -> Result<()> {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            ingest_merged(&cli.files, &mut engine)?;
+            ingest_merged(&cli.files, &mut engine, fields.clone())?;
         }
     }
 
@@ -147,14 +188,21 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let app = app::App::new(engine, source_label);
+    let app = app::App::new(engine, source_label, cli.columns);
     app::run(app, !cli.no_mouse)
 }
 
-fn ingest_file(path: &PathBuf, engine: &mut Engine) -> Result<()> {
+fn ingest_file(
+    path: &PathBuf,
+    engine: &mut Engine,
+    fields: Option<FieldNames>,
+) -> Result<()> {
     let t0 = Instant::now();
     let mut producer = FileProducer::open(path, 0)
         .with_context(|| format!("open {}", path.display()))?;
+    if let Some(f) = fields {
+        producer = producer.with_fields(f);
+    }
     engine.mmaps.push(producer.mmap());
     let total_bytes = producer.total_bytes();
     indexer::drain(&mut producer, engine);
@@ -170,13 +218,20 @@ fn ingest_file(path: &PathBuf, engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-fn ingest_merged(paths: &[PathBuf], engine: &mut Engine) -> Result<()> {
+fn ingest_merged(
+    paths: &[PathBuf],
+    engine: &mut Engine,
+    fields: Option<FieldNames>,
+) -> Result<()> {
     let t0 = Instant::now();
     let mut producers: Vec<Box<dyn RecordProducer>> = Vec::with_capacity(paths.len());
     let mut total_bytes: u64 = 0;
     for (i, path) in paths.iter().enumerate() {
-        let producer = FileProducer::open(path, i as u32)
+        let mut producer = FileProducer::open(path, i as u32)
             .with_context(|| format!("open {}", path.display()))?;
+        if let Some(f) = fields.clone() {
+            producer = producer.with_fields(f);
+        }
         engine.mmaps.push(producer.mmap());
         total_bytes += producer.total_bytes();
         producers.push(Box::new(producer));
@@ -197,11 +252,14 @@ fn ingest_merged(paths: &[PathBuf], engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-fn ingest_stdin(engine: &mut Engine) -> Result<()> {
+fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
     let t0 = Instant::now();
     let stdin = io::stdin();
     let reader = BufReader::new(stdin.lock());
     let mut producer = StreamProducer::new(reader, 0);
+    if let Some(f) = fields {
+        producer = producer.with_fields(f);
+    }
     // The stream path doesn't use mmaps; engine.mmaps stays empty. The
     // renderer routes stream rows through `owned_lines` and never touches
     // mmaps[source_id], so a missing entry is fine here.

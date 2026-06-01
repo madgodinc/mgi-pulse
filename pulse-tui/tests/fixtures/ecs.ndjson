@@ -1,0 +1,2 @@
+{"@timestamp":"2026-06-01T12:00:00Z","severity_text":"info","msg":"ecs start","host":"web1"}
+{"@timestamp":"2026-06-01T12:00:01Z","severity_text":"error","msg":"ecs boom","host":"web1"}

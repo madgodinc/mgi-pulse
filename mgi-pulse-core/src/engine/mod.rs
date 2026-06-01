@@ -91,6 +91,19 @@ impl Engine {
         self.schema = Some(sb.lock());
     }
 
+    /// Rescan the schema across an arbitrary set of records — useful when the
+    /// initial warmup landed on a boot banner or other unrepresentative
+    /// prefix and the user hits `R` to retry over the filtered view.
+    pub fn rescan_schema(&mut self, line_ids: &[u64]) {
+        let cap = (line_ids.len()).min(FILE_WARMUP_LINES);
+        let mut sb = SchemaBuilder::new();
+        for &line_id in &line_ids[..cap] {
+            let bytes = self.line_bytes(line_id);
+            sb.scan(bytes);
+        }
+        self.schema = Some(sb.lock());
+    }
+
     /// True when more than half the records carry a parsed timestamp. We
     /// use a majority threshold (not "at least one") so a single
     /// accidentally-timestamp-shaped line in a plain-text log doesn't

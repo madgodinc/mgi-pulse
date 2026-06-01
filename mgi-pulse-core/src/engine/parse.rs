@@ -9,13 +9,34 @@
 //! single-threaded, ~5× faster than `simd_json::to_borrowed_value`. The plan
 //! is validated; producers use the serde borrow strategy.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::engine::record::{severity, TS_UNTIMED};
 
-/// The shape we extract from every NDJSON record. Only `ts` and `level` are
-/// parsed at index time; everything else stays as raw bytes for the renderer
-/// to project on demand.
+/// Field names to extract for ts and level. Defaults match the most common
+/// NDJSON conventions; CLI flags override them for inputs with non-standard
+/// schemas (e.g. `@t`, `@timestamp`, `eventTime`, `severity_text`).
+#[derive(Debug, Clone)]
+pub struct FieldNames {
+    pub ts: String,
+    pub level: String,
+}
+
+impl Default for FieldNames {
+    fn default() -> Self {
+        Self {
+            ts: "ts".to_string(),
+            level: "level".to_string(),
+        }
+    }
+}
+
+/// The shape we extract from every NDJSON record when both fields use the
+/// default names. Generated derive code is a touch faster than the dynamic
+/// HashMap path, so we keep it for the common case.
 #[derive(Deserialize)]
 struct TsLevel<'a> {
     #[serde(default, borrow)]
@@ -72,6 +93,52 @@ pub fn ts_and_level(bytes: &[u8], stats: &mut ParseStats) -> (i64, u8) {
             (TS_UNTIMED, severity::UNKNOWN)
         }
     }
+}
+
+/// Extract `(ts_micros, severity)` from a raw NDJSON line, looking up custom
+/// field names instead of the hardcoded `ts` / `level`. Slower than
+/// [`ts_and_level`] because it goes through a borrowed HashMap; use it only
+/// when CLI override flags are set.
+pub fn ts_and_level_named(
+    bytes: &[u8],
+    fields: &FieldNames,
+    stats: &mut ParseStats,
+) -> (i64, u8) {
+    let map: HashMap<&str, &RawValue> = match serde_json::from_slice(bytes) {
+        Ok(m) => m,
+        Err(_) => {
+            stats.json_parse_errors += 1;
+            stats.untimed += 1;
+            return (TS_UNTIMED, severity::UNKNOWN);
+        }
+    };
+    let strip_quotes = |raw: &str| -> Option<String> {
+        if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
+            Some(raw[1..raw.len() - 1].to_string())
+        } else {
+            None
+        }
+    };
+    let sev = map
+        .get(fields.level.as_str())
+        .and_then(|v| strip_quotes(v.get()))
+        .map(|s| severity::from_bytes(s.as_bytes()))
+        .unwrap_or(severity::UNKNOWN);
+    let ts = match map.get(fields.ts.as_str()).and_then(|v| strip_quotes(v.get())) {
+        Some(s) => match parse_rfc3339_micros(&s) {
+            Some(v) => v,
+            None => {
+                stats.ts_parse_errors += 1;
+                stats.untimed += 1;
+                TS_UNTIMED
+            }
+        },
+        None => {
+            stats.untimed += 1;
+            TS_UNTIMED
+        }
+    };
+    (ts, sev)
 }
 
 /// Minimal RFC3339 parser for the timestamps `mgi-pulse` actually sees:

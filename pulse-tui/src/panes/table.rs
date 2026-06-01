@@ -101,6 +101,7 @@ pub fn render(
     scroll_top: u64,
     cursor: u64,
     title: &str,
+    max_columns: Option<usize>,
 ) {
     let block = Block::default().title(title).borders(Borders::ALL);
     let inner = block.inner(area);
@@ -129,11 +130,16 @@ pub fn render(
         + if show_level { COL_LV_W as u16 + 1 } else { 0 };
     let inner_w = inner.width.saturating_sub(fixed_w);
     let auto_cols = if show_columns {
-        let max_auto = (inner_w / (COL_FIELD_W as u16 + 1)) as usize;
+        let max_auto_w = (inner_w / (COL_FIELD_W as u16 + 1)) as usize;
+        // Width cap (terminal) intersected with CLI cap (user request).
+        let limit = match max_columns {
+            Some(n) => max_auto_w.min(n + 1),
+            None => max_auto_w,
+        };
         engine
             .schema
             .as_ref()
-            .map(|s| s.auto_columns(max_auto.saturating_sub(1).max(0)))
+            .map(|s| s.auto_columns(limit.saturating_sub(1).max(0)))
             .unwrap_or_default()
     } else {
         Vec::new()

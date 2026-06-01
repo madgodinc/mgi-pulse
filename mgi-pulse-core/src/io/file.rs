@@ -4,6 +4,20 @@
 //! Each emitted record carries the line's mmap location AND its parsed
 //! `ts_micros`/`severity` — the producer is the single place where NDJSON
 //! parse happens, so k-way merge downstream has timestamps to sort on.
+//!
+//! # mmap safety
+//!
+//! `Mmap::map` is `unsafe` because the OS gives us a memory region that
+//! reflects the current file. If a *different* process truncates or
+//! replaces the file underneath us, reading past the truncated region
+//! delivers `SIGBUS` to the whole process — not a Rust error, not
+//! catchable as `Result`. The process just dies.
+//!
+//! For mgi-pulse this means: **FileProducer is for static snapshots**
+//! (rotated logs, archived files). Active log files that the running
+//! application keeps writing to should be opened through the stream
+//! path (`tail -F file | mgi-pulse -`), which uses owned buffers and
+//! is safe under rotation. README documents this for end users.
 
 use std::fs::File;
 use std::path::Path;
@@ -12,7 +26,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use memmap2::Mmap;
 
-use crate::engine::parse::{ts_and_level, ParseStats};
+use crate::engine::parse::{ts_and_level, ts_and_level_named, FieldNames, ParseStats};
 use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
@@ -22,6 +36,8 @@ pub struct FileProducer {
     cursor: usize,
     line_id_counter: u64,
     stats: ParseStats,
+    /// When set, overrides the default `ts` / `level` field names.
+    fields: Option<FieldNames>,
 }
 
 impl FileProducer {
@@ -37,7 +53,15 @@ impl FileProducer {
             cursor: 0,
             line_id_counter: 0,
             stats: ParseStats::default(),
+            fields: None,
         })
+    }
+
+    /// Override the JSON field names used to extract ts / level. Pass this
+    /// before draining if the source's schema differs from the defaults.
+    pub fn with_fields(mut self, fields: FieldNames) -> Self {
+        self.fields = Some(fields);
+        self
     }
 
     pub fn mmap(&self) -> Arc<Mmap> {
@@ -79,7 +103,10 @@ impl RecordProducer for FileProducer {
             let offset = self.cursor as u64;
             let len = line_len as u32;
             let line_bytes = &buf[self.cursor..self.cursor + line_len];
-            let (ts_micros, severity) = ts_and_level(line_bytes, &mut self.stats);
+            let (ts_micros, severity) = match &self.fields {
+                Some(f) => ts_and_level_named(line_bytes, f, &mut self.stats),
+                None => ts_and_level(line_bytes, &mut self.stats),
+            };
 
             let line_id = self.line_id_counter;
             self.line_id_counter += 1;

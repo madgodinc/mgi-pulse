@@ -6,7 +6,7 @@
 
 use std::io::BufRead;
 
-use crate::engine::parse::{ts_and_level, ParseStats};
+use crate::engine::parse::{ts_and_level, ts_and_level_named, FieldNames, ParseStats};
 use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
@@ -17,6 +17,7 @@ pub struct StreamProducer<R: BufRead> {
     scratch: Vec<u8>,
     closed: bool,
     stats: ParseStats,
+    fields: Option<FieldNames>,
 }
 
 impl<R: BufRead> StreamProducer<R> {
@@ -28,7 +29,13 @@ impl<R: BufRead> StreamProducer<R> {
             scratch: Vec::with_capacity(4096),
             closed: false,
             stats: ParseStats::default(),
+            fields: None,
         }
+    }
+
+    pub fn with_fields(mut self, fields: FieldNames) -> Self {
+        self.fields = Some(fields);
+        self
     }
 
     pub fn source_id(&self) -> u32 {
@@ -62,8 +69,10 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
                     if self.scratch.is_empty() {
                         continue;
                     }
-                    let (ts_micros, severity) =
-                        ts_and_level(&self.scratch, &mut self.stats);
+                    let (ts_micros, severity) = match &self.fields {
+                        Some(f) => ts_and_level_named(&self.scratch, f, &mut self.stats),
+                        None => ts_and_level(&self.scratch, &mut self.stats),
+                    };
                     let line_id = self.line_id_counter;
                     self.line_id_counter += 1;
                     let owned = self.scratch.clone().into_boxed_slice();

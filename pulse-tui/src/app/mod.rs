@@ -373,10 +373,12 @@ pub struct App {
     /// Mouse handlers consult these to translate raw (col, row) into
     /// app-level actions like "switch tab N".
     pub tab_hitboxes: Vec<(u16, u16, u16, usize)>,
+    /// CLI cap on the number of auto-columns. None means unbounded.
+    pub max_columns: Option<usize>,
 }
 
 impl App {
-    pub fn new(engine: Engine, source_label: String) -> Self {
+    pub fn new(engine: Engine, source_label: String, max_columns: Option<usize>) -> Self {
         // Default tab set: All, then one tab per severity bucket. Each is a
         // SeverityMinPredicate, so "Error" means error+fatal, "Warn" means
         // warn+ above, etc. Keeps the temporal order intact within each tab.
@@ -409,6 +411,7 @@ impl App {
             active_tab: 0,
             input: None,
             tab_hitboxes: Vec::new(),
+            max_columns,
         }
     }
 
@@ -585,6 +588,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                     v.scroll_top,
                     v.cursor,
                     &title,
+                    app.max_columns,
                 );
                 detail::render(f, split[1], &app.engine, v.cursor);
             } else {
@@ -596,6 +600,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                     v.scroll_top,
                     v.cursor,
                     &title,
+                    app.max_columns,
                 );
             }
 
@@ -756,6 +761,23 @@ fn run_loop<B: ratatui::backend::Backend>(
                             (KeyCode::Char('m'), _) => {
                                 let engine = &app.engine;
                                 app.views[app.active_tab].toggle_severity_mode(engine);
+                            }
+                            (KeyCode::Char('R'), _) => {
+                                // Rescan schema using the current filtered
+                                // view as the sample. Closes the case where
+                                // the initial 10k warmup landed on a boot
+                                // banner with a different schema than the
+                                // body of the log.
+                                let view = app.views[app.active_tab]
+                                    .filtered_view
+                                    .clone();
+                                app.engine.rescan_schema(&view);
+                                for v in &mut app.views {
+                                    v.histogram_cache = None;
+                                    v.generation = v.generation.wrapping_add(1);
+                                }
+                                app.views[app.active_tab].status_msg =
+                                    format!("schema rescanned over {} records", view.len());
                             }
                             // Quick severity filters on the active tab.
                             // Strict by default; `m` toggles Min mode.
