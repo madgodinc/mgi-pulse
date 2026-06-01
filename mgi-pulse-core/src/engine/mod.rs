@@ -88,6 +88,35 @@ impl Engine {
         }
         self.schema = Some(sb.lock());
     }
+
+    /// True if at least one record carried a parsed timestamp. False on
+    /// plain-text inputs (Clojure log4j defaults, raw stdout, etc.) where
+    /// every record is in the untimed bucket — the timeline pane should
+    /// hide itself in that case.
+    pub fn has_timestamps(&self) -> bool {
+        self.indexes.parse_stats.untimed < self.indexes.len() as u64
+    }
+
+    /// True if at least one record had a recognizable severity field.
+    /// False on plain-text inputs where every record is UNKNOWN — the
+    /// severity tabs should collapse to just `All` in that case.
+    pub fn has_severity(&self) -> bool {
+        self.indexes
+            .severity
+            .levels
+            .iter()
+            .any(|s| *s != crate::engine::record::severity::UNKNOWN)
+    }
+
+    /// True if schema warmup found at least one structured field. False on
+    /// plain-text inputs — the table should hide column headers and give
+    /// the whole row width to the raw payload.
+    pub fn has_structured_fields(&self) -> bool {
+        self.schema
+            .as_ref()
+            .map(|s| !s.ordered_fields.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 impl Default for Engine {

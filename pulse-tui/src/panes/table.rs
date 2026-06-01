@@ -115,17 +115,29 @@ pub fn render(
         return;
     }
 
-    // Auto-columns from the locked schema. The visible width is split:
-    //   line | ts | level | <auto-columns> | <raw remainder>
-    // We cap auto-columns by how many fit at COL_FIELD_W each.
-    let fixed_w = (COL_LINE_W + 1 + COL_TS_W + 1 + COL_LV_W + 1) as u16;
+    // Less-mode adapt: each column is only shown when there's data behind
+    // it. Plain-text inputs (no JSON ts / level / fields) collapse the
+    // whole row to a wide raw column — like `less`, but with line numbers
+    // and the cursor we already have.
+    let show_ts = engine.has_timestamps();
+    let show_level = engine.has_severity();
+    let show_columns = engine.has_structured_fields();
+
+    let fixed_w = COL_LINE_W as u16
+        + 1
+        + if show_ts { COL_TS_W as u16 + 1 } else { 0 }
+        + if show_level { COL_LV_W as u16 + 1 } else { 0 };
     let inner_w = inner.width.saturating_sub(fixed_w);
-    let max_auto = (inner_w / (COL_FIELD_W as u16 + 1)) as usize;
-    let auto_cols = engine
-        .schema
-        .as_ref()
-        .map(|s| s.auto_columns(max_auto.saturating_sub(1).max(0)))
-        .unwrap_or_default();
+    let auto_cols = if show_columns {
+        let max_auto = (inner_w / (COL_FIELD_W as u16 + 1)) as usize;
+        engine
+            .schema
+            .as_ref()
+            .map(|s| s.auto_columns(max_auto.saturating_sub(1).max(0)))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let raw_w = inner_w
         .saturating_sub((auto_cols.len() * (COL_FIELD_W + 1)) as u16)
         as usize;
@@ -135,22 +147,24 @@ pub fn render(
     let mut lines: Vec<Line> = Vec::with_capacity(visible.saturating_add(1));
 
     // Header row.
-    let mut header_spans = vec![
-        Span::styled(
-            format!("{:>1$}", "line", COL_LINE_W),
-            Style::default().add_modifier(Modifier::DIM),
-        ),
-        Span::raw(" "),
-        Span::styled(
+    let mut header_spans = vec![Span::styled(
+        format!("{:>1$}", "line", COL_LINE_W),
+        Style::default().add_modifier(Modifier::DIM),
+    )];
+    if show_ts {
+        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::styled(
             format!("{:<1$}", "timestamp", COL_TS_W),
             Style::default().add_modifier(Modifier::DIM),
-        ),
-        Span::raw(" "),
-        Span::styled(
+        ));
+    }
+    if show_level {
+        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::styled(
             format!("{:<1$}", "level", COL_LV_W),
             Style::default().add_modifier(Modifier::DIM),
-        ),
-    ];
+        ));
+    }
     for col in &auto_cols {
         header_spans.push(Span::raw(" "));
         header_spans.push(Span::styled(
@@ -160,8 +174,13 @@ pub fn render(
     }
     if raw_w > 0 {
         header_spans.push(Span::raw(" "));
+        let raw_label = if !show_ts && !show_level && auto_cols.is_empty() {
+            "(plain text)"
+        } else {
+            "raw"
+        };
         header_spans.push(Span::styled(
-            truncate_padded("raw", raw_w),
+            truncate_padded(raw_label, raw_w),
             Style::default().add_modifier(Modifier::DIM),
         ));
     }
@@ -182,19 +201,21 @@ pub fn render(
             Style::default()
         };
 
-        let mut spans = vec![
-            Span::styled(
-                format!("{:>1$}", line_id, COL_LINE_W),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(" "),
-            Span::styled(format_ts_utc(ts), severity_style(sev)),
-            Span::raw(" "),
-            Span::styled(
+        let mut spans = vec![Span::styled(
+            format!("{:>1$}", line_id, COL_LINE_W),
+            Style::default().fg(Color::DarkGray),
+        )];
+        if show_ts {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format_ts_utc(ts), severity_style(sev)));
+        }
+        if show_level {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
                 format!("{:<1$}", severity::name(sev), COL_LV_W),
                 severity_style(sev).add_modifier(Modifier::BOLD),
-            ),
-        ];
+            ));
+        }
         for col in &auto_cols {
             spans.push(Span::raw(" "));
             let value = project_field(bytes, col.as_str())

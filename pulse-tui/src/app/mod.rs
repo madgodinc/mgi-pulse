@@ -311,24 +311,28 @@ impl App {
         // Default tab set: All, then one tab per severity bucket. Each is a
         // SeverityMinPredicate, so "Error" means error+fatal, "Warn" means
         // warn+ above, etc. Keeps the temporal order intact within each tab.
-        // Per-severity tabs. Error tab includes Fatal because a fatal record
-        // is "at least an error" and grouping them is what an operator
-        // actually wants. The other tabs stay strict (single level).
-        let views = vec![
-            View::new_all(&engine),
-            View::new_with_severity(
-                &engine,
-                "Error",
-                &[severity::ERROR, severity::FATAL],
-            ),
-            View::new_with_severity(&engine, "Warn", &[severity::WARN]),
-            View::new_with_severity(&engine, "Info", &[severity::INFO]),
-            View::new_with_severity(
-                &engine,
-                "Debug",
-                &[severity::DEBUG, severity::TRACE],
-            ),
-        ];
+        // Per-severity tabs only make sense when at least one record had a
+        // parseable level. Plain-text logs (Clojure log4j defaults, raw
+        // stdout) get only `All` — extra tabs would be empty and confusing.
+        let views = if engine.has_severity() {
+            vec![
+                View::new_all(&engine),
+                View::new_with_severity(
+                    &engine,
+                    "Error",
+                    &[severity::ERROR, severity::FATAL],
+                ),
+                View::new_with_severity(&engine, "Warn", &[severity::WARN]),
+                View::new_with_severity(&engine, "Info", &[severity::INFO]),
+                View::new_with_severity(
+                    &engine,
+                    "Debug",
+                    &[severity::DEBUG, severity::TRACE],
+                ),
+            ]
+        } else {
+            vec![View::new_all(&engine)]
+        };
         Self {
             engine,
             source_label,
@@ -423,43 +427,60 @@ fn run_loop<B: ratatui::backend::Backend>(
 
         terminal.draw(|f| {
             let area = f.area();
+
+            // Layout adapts to what the data actually carries. Hide the
+            // tab bar when there's only one tab (plain-text input → just
+            // `All`); hide the timeline when no record had a parseable ts.
+            let show_tabs = app.views.len() > 1;
+            let show_timeline = app.engine.has_timestamps();
+            let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+            if show_tabs { constraints.push(Constraint::Length(1)); }
+            if show_timeline { constraints.push(Constraint::Length(4)); }
+            constraints.push(Constraint::Min(3));
+            constraints.push(Constraint::Length(1));
             let outer = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1),  // tabs
-                    Constraint::Length(4),  // timeline
-                    Constraint::Min(3),     // table (and detail when open)
-                    Constraint::Length(1),  // status
-                ])
+                .constraints(constraints)
                 .split(area);
+
+            // Resolve which slot each pane occupies.
+            let mut slot = 0usize;
+            let tabs_slot = if show_tabs { let s = slot; slot += 1; Some(s) } else { None };
+            let timeline_slot = if show_timeline { let s = slot; slot += 1; Some(s) } else { None };
+            let table_slot = slot;
+            let status_slot = slot + 1;
 
             // Tabs bar. Each tab shows `Title` (strict) or `Title+` (min mode
             // expanded — Warn+ means warn AND everything above).
-            let mut tab_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
-            for (i, v) in app.views.iter().enumerate() {
-                if i > 0 {
-                    tab_spans.push(Span::raw(" "));
+            if let Some(slot) = tabs_slot {
+                let mut tab_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
+                for (i, v) in app.views.iter().enumerate() {
+                    if i > 0 {
+                        tab_spans.push(Span::raw(" "));
+                    }
+                    let suffix = if v.severity_min_mode && !v.severity_levels.is_empty() {
+                        "+"
+                    } else {
+                        ""
+                    };
+                    let label = format!(" {}{} ", v.title, suffix);
+                    let style = if i == app.active_tab {
+                        Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    tab_spans.push(Span::styled(label, style));
                 }
-                let suffix = if v.severity_min_mode && !v.severity_levels.is_empty() {
-                    "+"
-                } else {
-                    ""
-                };
-                let label = format!(" {}{} ", v.title, suffix);
-                let style = if i == app.active_tab {
-                    Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                tab_spans.push(Span::styled(label, style));
+                let tabs_line = Paragraph::new(Line::from(tab_spans));
+                f.render_widget(tabs_line, outer[slot]);
             }
-            let tabs_line = Paragraph::new(Line::from(tab_spans));
-            f.render_widget(tabs_line, outer[0]);
 
             // Timeline.
             let v = &app.views[app.active_tab];
-            if let Some((_, _, h)) = &v.histogram_cache {
-                timeline::render(f, outer[1], h);
+            if let Some(slot) = timeline_slot {
+                if let Some((_, _, h)) = &v.histogram_cache {
+                    timeline::render(f, outer[slot], h);
+                }
             }
 
             // Table area (and detail when open).
@@ -472,7 +493,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                    .split(outer[2]);
+                    .split(outer[table_slot]);
                 table::render(
                     f,
                     split[0],
@@ -486,7 +507,7 @@ fn run_loop<B: ratatui::backend::Backend>(
             } else {
                 table::render(
                     f,
-                    outer[2],
+                    outer[table_slot],
                     &app.engine,
                     &v.filtered_view,
                     v.scroll_top,
@@ -505,12 +526,18 @@ fn run_loop<B: ratatui::backend::Backend>(
                 Span::styled(prompt, Style::default().add_modifier(Modifier::DIM)),
                 Span::raw("  "),
                 Span::styled(
-                    "q quit · / regex · f field=val · 1-4 severity · m min-mode · d detail · Tab next · Esc clear",
+                    if show_tabs {
+                        "q quit · / regex · f field=val · 1-4 severity · m min-mode · d detail · Tab next · Esc clear"
+                    } else {
+                        // Plain-text fallback: only the keys that actually do
+                        // anything are advertised.
+                        "q quit · / regex · ↑↓ PgUp PgDn g G · Esc clear"
+                    },
                     Style::default().fg(Color::DarkGray),
                 ),
             ]))
             .block(Block::default().borders(Borders::NONE));
-            f.render_widget(status, outer[3]);
+            f.render_widget(status, outer[status_slot]);
         })?;
 
         if !event::poll(Duration::from_millis(100))? {
