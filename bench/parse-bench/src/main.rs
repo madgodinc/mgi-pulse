@@ -187,6 +187,7 @@ fn main() -> Result<()> {
     // Run each strategy twice. The first run warms the page cache (the kernel
     // pulls the file into RAM); the second is what we report. With 2 GB and
     // 48 GB RAM the file fits comfortably.
+    #[allow(clippy::type_complexity)]
     let strategies: &[(&str, fn(&[u8]) -> Stats)] = &[
         ("raw-scan", run_raw_scan),
         ("serde-borrow", run_serde_borrow),
