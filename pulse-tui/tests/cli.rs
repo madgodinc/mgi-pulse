@@ -121,6 +121,51 @@ fn mixed_timed_majority_keeps_structured_mode() {
 }
 
 #[test]
+fn logfmt_input_with_force_flag_parses_ts_and_severity() {
+    // logfmt: 5 records, all timed, severity=info/warn/error distributed.
+    // Without --format the line wouldn't be JSON and would land in
+    // less-mode; with --format=logfmt all 5 lines parse correctly.
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg("--format=logfmt")
+        .arg(fixture("logfmt.log"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 5 records"))
+        .stdout(contains("untimed: 0"))
+        // schema scanner is NDJSON-only in v0.1.x; logfmt schema lands in
+        // a later step. Auto-columns stay empty for now.
+        .stdout(contains("auto-columns: []"));
+}
+
+#[test]
+fn logfmt_without_flag_falls_into_less_mode() {
+    // Without --format=logfmt the parser treats every line as JSON,
+    // every parse fails, every record lands in less-mode.
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(fixture("logfmt.log"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 5 records"))
+        .stdout(contains("json errors: 5"));
+}
+
+#[test]
+fn unknown_format_value_is_rejected() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg("--format=protobuf")
+        .arg(fixture("structured.ndjson"))
+        .assert()
+        .failure()
+        .stderr(contains("unknown --format"));
+}
+
+#[test]
 fn mostly_plain_minority_json_falls_into_less_mode() {
     // One JSON line out of seven → minority → has_timestamps() / has_severity()
     // both stay false → less-mode wins. The single JSON line still appears in

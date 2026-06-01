@@ -26,7 +26,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use memmap2::Mmap;
 
-use crate::engine::parse::{ts_and_level, ts_and_level_named, FieldNames, ParseStats};
+use crate::engine::format::LogFormat;
+use crate::engine::parse::{FieldNames, ParseStats};
 use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
@@ -38,6 +39,8 @@ pub struct FileProducer {
     stats: ParseStats,
     /// When set, overrides the default `ts` / `level` field names.
     fields: Option<FieldNames>,
+    /// Format for parsing ts/level. Defaults to NDJSON.
+    format: LogFormat,
 }
 
 impl FileProducer {
@@ -54,6 +57,7 @@ impl FileProducer {
             line_id_counter: 0,
             stats: ParseStats::default(),
             fields: None,
+            format: LogFormat::Ndjson,
         })
     }
 
@@ -61,6 +65,12 @@ impl FileProducer {
     /// before draining if the source's schema differs from the defaults.
     pub fn with_fields(mut self, fields: FieldNames) -> Self {
         self.fields = Some(fields);
+        self
+    }
+
+    /// Override the format used to parse each line. Defaults to NDJSON.
+    pub fn with_format(mut self, format: LogFormat) -> Self {
+        self.format = format;
         self
     }
 
@@ -103,10 +113,9 @@ impl RecordProducer for FileProducer {
             let offset = self.cursor as u64;
             let len = line_len as u32;
             let line_bytes = &buf[self.cursor..self.cursor + line_len];
-            let (ts_micros, severity) = match &self.fields {
-                Some(f) => ts_and_level_named(line_bytes, f, &mut self.stats),
-                None => ts_and_level(line_bytes, &mut self.stats),
-            };
+            let (ts_micros, severity) =
+                self.format
+                    .parse_ts_level(line_bytes, &mut self.stats, self.fields.as_ref());
 
             let line_id = self.line_id_counter;
             self.line_id_counter += 1;

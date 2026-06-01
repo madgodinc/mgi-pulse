@@ -16,6 +16,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use mgi_pulse_core::engine::format::LogFormat;
 use mgi_pulse_core::engine::parse::FieldNames;
 use mgi_pulse_core::engine::{indexer, Engine};
 use mgi_pulse_core::io::file::FileProducer;
@@ -65,6 +66,12 @@ struct Cli {
     #[arg(long, value_name = "N")]
     columns: Option<usize>,
 
+    /// Force a specific log format instead of auto-detect. Valid values:
+    /// `ndjson`, `logfmt`. When omitted, the first ~200 lines of the
+    /// input are sampled to guess.
+    #[arg(long, value_name = "FORMAT")]
+    format: Option<String>,
+
     /// Deprecated legacy flag. Mouse is on by default now; pass
     /// `--no-mouse` to disable.
     #[arg(long, default_value_t = false, hide = true)]
@@ -100,6 +107,15 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    // Resolve --format flag → LogFormat. Auto-detect (None) is the v0.2
+    // story; for v0.1.x the flag is the only way to pick logfmt.
+    let forced_format = match cli.format.as_deref() {
+        None => None,
+        Some("ndjson") => Some(LogFormat::Ndjson),
+        Some("logfmt") => Some(LogFormat::Logfmt),
+        Some(other) => anyhow::bail!("unknown --format value '{}'; valid: ndjson, logfmt", other),
+    };
+
     // Build the override field-names from CLI flags. Defaults to None so
     // the fast hardcoded path is used unless a flag was passed.
     let fields = match (cli.time_field.clone(), cli.level_field.clone()) {
@@ -119,9 +135,14 @@ fn run() -> Result<()> {
     let mut engine = Engine::new();
     let source_label: String;
 
+    // For v0.1.x the format is either CLI-forced or NDJSON by default.
+    // Auto-detect lands in a later step once we have something to test it
+    // on besides synthetic NDJSON.
+    let fmt = forced_format.unwrap_or(LogFormat::Ndjson);
+
     if cli.files.is_empty() {
         source_label = "<stdin>".to_string();
-        ingest_stdin(&mut engine, fields.clone())?;
+        ingest_stdin(&mut engine, fields.clone(), fmt)?;
     } else {
         // Single file: fast path that keeps line_id == arrival order.
         // Multiple files: k-way merge by ts_micros — line_id becomes
@@ -137,10 +158,10 @@ fn run() -> Result<()> {
             let path = &cli.files[0];
             if path.as_os_str() == "-" {
                 source_label = "<stdin>".to_string();
-                ingest_stdin(&mut engine, fields.clone())?;
+                ingest_stdin(&mut engine, fields.clone(), fmt)?;
             } else {
                 source_label = path.display().to_string();
-                ingest_file(path, &mut engine, fields.clone())?;
+                ingest_file(path, &mut engine, fields.clone(), fmt)?;
             }
         } else {
             // Multi-file merge.
@@ -150,7 +171,7 @@ fn run() -> Result<()> {
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            ingest_merged(&cli.files, &mut engine, fields.clone())?;
+            ingest_merged(&cli.files, &mut engine, fields.clone(), fmt)?;
         }
     }
 
@@ -196,17 +217,21 @@ fn run() -> Result<()> {
     app::run(app, !cli.no_mouse)
 }
 
-fn ingest_file(path: &PathBuf, engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
+fn ingest_file(
+    path: &PathBuf,
+    engine: &mut Engine,
+    fields: Option<FieldNames>,
+    fmt: LogFormat,
+) -> Result<()> {
     let t0 = Instant::now();
     let mut producer =
         FileProducer::open(path, 0).with_context(|| format!("open {}", path.display()))?;
     if let Some(f) = fields {
         producer = producer.with_fields(f);
     }
+    producer = producer.with_format(fmt);
     engine.mmaps.push(producer.mmap());
-    engine
-        .source_formats
-        .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
+    engine.source_formats.push(fmt);
     let total_bytes = producer.total_bytes();
     indexer::drain(&mut producer, engine);
     engine.indexes.parse_stats.fold(producer.stats());
@@ -221,7 +246,12 @@ fn ingest_file(path: &PathBuf, engine: &mut Engine, fields: Option<FieldNames>) 
     Ok(())
 }
 
-fn ingest_merged(paths: &[PathBuf], engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
+fn ingest_merged(
+    paths: &[PathBuf],
+    engine: &mut Engine,
+    fields: Option<FieldNames>,
+    fmt: LogFormat,
+) -> Result<()> {
     let t0 = Instant::now();
     let mut producers: Vec<Box<dyn RecordProducer>> = Vec::with_capacity(paths.len());
     let mut total_bytes: u64 = 0;
@@ -231,10 +261,9 @@ fn ingest_merged(paths: &[PathBuf], engine: &mut Engine, fields: Option<FieldNam
         if let Some(f) = fields.clone() {
             producer = producer.with_fields(f);
         }
+        producer = producer.with_format(fmt);
         engine.mmaps.push(producer.mmap());
-        engine
-            .source_formats
-            .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
+        engine.source_formats.push(fmt);
         total_bytes += producer.total_bytes();
         producers.push(Box::new(producer));
     }
@@ -254,7 +283,7 @@ fn ingest_merged(paths: &[PathBuf], engine: &mut Engine, fields: Option<FieldNam
     Ok(())
 }
 
-fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
+fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>, fmt: LogFormat) -> Result<()> {
     let t0 = Instant::now();
     let stdin = io::stdin();
     let reader = BufReader::new(stdin.lock());
@@ -262,11 +291,8 @@ fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
     if let Some(f) = fields {
         producer = producer.with_fields(f);
     }
-    // Stream source slot. Format is hardcoded NDJSON in v0.1; the engine
-    // looks this up to drive the per-source FieldCache.
-    engine
-        .source_formats
-        .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
+    producer = producer.with_format(fmt);
+    engine.source_formats.push(fmt);
     // The stream path doesn't use mmaps; engine.mmaps stays empty. The
     // renderer routes stream rows through `owned_lines` and never touches
     // mmaps[source_id], so a missing entry is fine here.

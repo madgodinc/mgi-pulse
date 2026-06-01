@@ -20,6 +20,10 @@ use crate::engine::record::severity;
 pub enum LogFormat {
     #[default]
     Ndjson,
+    /// Go / Heroku-style `key=value key="quoted value"` lines. Reference:
+    /// <https://brandur.org/logfmt>. Common in Go ecosystems via
+    /// `kr/logfmt` and Heroku Logplex.
+    Logfmt,
 }
 
 impl LogFormat {
@@ -38,6 +42,7 @@ impl LogFormat {
                 Some(f) => ts_and_level_named(line, f, stats),
                 None => ts_and_level(line, stats),
             },
+            LogFormat::Logfmt => crate::engine::parse_logfmt::ts_and_level(line, stats, fields),
         }
     }
 
@@ -47,10 +52,13 @@ impl LogFormat {
     ///
     /// The borrow lifetime is tied to `line`: callers either render the
     /// value immediately or cache an owned copy via `FieldCache`.
-    pub fn project_field<'a>(self, line: &'a [u8], key: &str) -> Option<&'a str> {
+    pub fn project_field<'a>(self, line: &'a [u8], key: &str) -> Option<std::borrow::Cow<'a, str>> {
         match self {
-            LogFormat::Ndjson => {
-                crate::schema::project_field(line, key).map(crate::schema::unquote_if_string)
+            LogFormat::Ndjson => crate::schema::project_field(line, key)
+                .map(crate::schema::unquote_if_string)
+                .map(std::borrow::Cow::Borrowed),
+            LogFormat::Logfmt => {
+                crate::engine::parse_logfmt::project_field(line, key).map(std::borrow::Cow::Owned)
             }
         }
     }
@@ -62,6 +70,7 @@ impl LogFormat {
     pub fn is_continuation(self, _line: &[u8]) -> bool {
         match self {
             LogFormat::Ndjson => false,
+            LogFormat::Logfmt => false,
         }
     }
 
@@ -72,6 +81,7 @@ impl LogFormat {
     pub fn severity_from_level(self, level: &str) -> u8 {
         match self {
             LogFormat::Ndjson => severity::from_bytes(level.as_bytes()),
+            LogFormat::Logfmt => severity::from_bytes(level.as_bytes()),
         }
     }
 
@@ -81,22 +91,104 @@ impl LogFormat {
     pub fn parse_timestamp(self, s: &str) -> Option<i64> {
         match self {
             LogFormat::Ndjson => parse_rfc3339_micros(s),
+            LogFormat::Logfmt => parse_rfc3339_micros(s),
         }
     }
 
-    /// Cheap heuristic to guess a format from the first record of an
+    /// Cheap heuristic to guess a format from the first records of an
     /// input. Auto-detect is opt-in: producers default to whatever the
     /// CLI says. Returns `Ndjson` when in doubt.
     ///
-    /// This is the v0.1 stub — extended when logfmt / EDN / Python land.
+    /// Heuristic: a line that starts with `{` and ends with `}` is
+    /// treated as NDJSON; a line that has at least two `key=value` pairs
+    /// (no leading `{`) is logfmt. Everything else defaults to NDJSON
+    /// so plain-text falls into the less-mode path the way the user
+    /// already expects.
     pub fn detect(first_lines: &[&[u8]]) -> LogFormat {
+        let mut ndjson_votes = 0;
+        let mut logfmt_votes = 0;
         for line in first_lines {
-            if line.first() == Some(&b'{') {
-                return LogFormat::Ndjson;
+            let trimmed = trim_ascii(line);
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}') {
+                ndjson_votes += 1;
+                continue;
+            }
+            // Logfmt signature: at least two `key=value` pairs with
+            // alphanumeric keys. Cheap detection — full parse is too
+            // expensive for a sample of 100 lines.
+            if logfmt_signature(trimmed) {
+                logfmt_votes += 1;
             }
         }
-        LogFormat::Ndjson
+        if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
+            LogFormat::Logfmt
+        } else {
+            LogFormat::Ndjson
+        }
     }
+}
+
+fn trim_ascii(line: &[u8]) -> &[u8] {
+    let mut start = 0;
+    let mut end = line.len();
+    while start < end && line[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while end > start && line[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    &line[start..end]
+}
+
+/// True when `line` looks like logfmt: at least two `key=value` pairs
+/// whose keys are runs of alphanumeric/_/. characters.
+fn logfmt_signature(line: &[u8]) -> bool {
+    let mut pairs = 0;
+    let mut i = 0;
+    while i < line.len() {
+        // Skip spaces.
+        while i < line.len() && line[i] == b' ' {
+            i += 1;
+        }
+        let key_start = i;
+        while i < line.len()
+            && (line[i].is_ascii_alphanumeric() || line[i] == b'_' || line[i] == b'.')
+        {
+            i += 1;
+        }
+        let key_len = i - key_start;
+        if key_len == 0 || i >= line.len() || line[i] != b'=' {
+            return pairs >= 2;
+        }
+        pairs += 1;
+        if pairs >= 2 {
+            return true;
+        }
+        // Skip past the value.
+        i += 1; // past `=`
+        if i < line.len() && line[i] == b'"' {
+            i += 1;
+            while i < line.len() {
+                if line[i] == b'\\' && i + 1 < line.len() {
+                    i += 2;
+                    continue;
+                }
+                if line[i] == b'"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            while i < line.len() && line[i] != b' ' {
+                i += 1;
+            }
+        }
+    }
+    pairs >= 2
 }
 
 /// Per-record field cache. Reused across predicate evaluations on a single
@@ -185,32 +277,67 @@ mod tests {
 
     #[test]
     fn ndjson_project_field_handles_string_and_number() {
+        let line = br#"{"logger":"app","n":5}"#;
         assert_eq!(
-            LogFormat::Ndjson.project_field(br#"{"logger":"app","n":5}"#, "logger"),
+            LogFormat::Ndjson.project_field(line, "logger").as_deref(),
             Some("app")
         );
         assert_eq!(
-            LogFormat::Ndjson.project_field(br#"{"logger":"app","n":5}"#, "n"),
+            LogFormat::Ndjson.project_field(line, "n").as_deref(),
             Some("5")
         );
+        assert!(LogFormat::Ndjson
+            .project_field(br#"{"logger":"app"}"#, "missing")
+            .is_none());
+    }
+
+    #[test]
+    fn logfmt_project_field_finds_quoted_value() {
+        let line = br#"level=info msg="hello world" user=admin"#;
         assert_eq!(
-            LogFormat::Ndjson.project_field(br#"{"logger":"app"}"#, "missing"),
-            None
+            LogFormat::Logfmt.project_field(line, "msg").as_deref(),
+            Some("hello world")
         );
+        assert_eq!(
+            LogFormat::Logfmt.project_field(line, "user").as_deref(),
+            Some("admin")
+        );
+    }
+
+    #[test]
+    fn logfmt_parse_ts_level_round_trip() {
+        let mut stats = ParseStats::default();
+        let line = b"ts=2026-06-01T12:00:00Z level=error msg=boom";
+        let (ts, sev) = LogFormat::Logfmt.parse_ts_level(line, &mut stats, None);
+        assert!(ts > 0);
+        assert_eq!(sev, severity::ERROR);
+    }
+
+    #[test]
+    fn detect_picks_logfmt_when_multiple_kv_pairs() {
+        let lines: Vec<&[u8]> = vec![
+            b"level=info ts=2026 msg=start",
+            b"level=warn ts=2027 msg=slow",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Logfmt);
+    }
+
+    #[test]
+    fn detect_picks_ndjson_when_lines_look_like_json() {
+        let lines: Vec<&[u8]> = vec![br#"{"a":1}"#, br#"{"b":2}"#];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Ndjson);
+    }
+
+    #[test]
+    fn detect_defaults_to_ndjson_for_plain_text() {
+        let lines: Vec<&[u8]> = vec![b"plain", b"text without kv"];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Ndjson);
     }
 
     #[test]
     fn ndjson_is_never_continuation() {
         assert!(!LogFormat::Ndjson.is_continuation(b"    at foo()"));
         assert!(!LogFormat::Ndjson.is_continuation(b"random"));
-    }
-
-    #[test]
-    fn detect_defaults_to_ndjson() {
-        let lines: Vec<&[u8]> = vec![br#"{"a":1}"#, br#"{"a":2}"#];
-        assert_eq!(LogFormat::detect(&lines), LogFormat::Ndjson);
-        let plain: Vec<&[u8]> = vec![b"plain", b"text"];
-        assert_eq!(LogFormat::detect(&plain), LogFormat::Ndjson);
     }
 
     #[test]

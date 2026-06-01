@@ -6,7 +6,8 @@
 
 use std::io::BufRead;
 
-use crate::engine::parse::{ts_and_level, ts_and_level_named, FieldNames, ParseStats};
+use crate::engine::format::LogFormat;
+use crate::engine::parse::{FieldNames, ParseStats};
 use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
@@ -18,6 +19,7 @@ pub struct StreamProducer<R: BufRead> {
     closed: bool,
     stats: ParseStats,
     fields: Option<FieldNames>,
+    format: LogFormat,
 }
 
 impl<R: BufRead> StreamProducer<R> {
@@ -30,11 +32,17 @@ impl<R: BufRead> StreamProducer<R> {
             closed: false,
             stats: ParseStats::default(),
             fields: None,
+            format: LogFormat::Ndjson,
         }
     }
 
     pub fn with_fields(mut self, fields: FieldNames) -> Self {
         self.fields = Some(fields);
+        self
+    }
+
+    pub fn with_format(mut self, format: LogFormat) -> Self {
+        self.format = format;
         self
     }
 
@@ -73,10 +81,11 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
                     if self.scratch.is_empty() {
                         continue;
                     }
-                    let (ts_micros, severity) = match &self.fields {
-                        Some(f) => ts_and_level_named(&self.scratch, f, &mut self.stats),
-                        None => ts_and_level(&self.scratch, &mut self.stats),
-                    };
+                    let (ts_micros, severity) = self.format.parse_ts_level(
+                        &self.scratch,
+                        &mut self.stats,
+                        self.fields.as_ref(),
+                    );
                     let line_id = self.line_id_counter;
                     self.line_id_counter += 1;
                     let owned = self.scratch.clone().into_boxed_slice();
