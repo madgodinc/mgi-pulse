@@ -6,24 +6,15 @@
 //! settles the keyboard model.
 
 use mgi_pulse_core::engine::histogram::Histogram;
-use mgi_pulse_core::engine::record::severity;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 const BAR_CHARS: [char; 8] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇'];
 
-fn severity_color(sev: u8) -> Color {
-    match sev {
-        severity::FATAL | severity::ERROR => Color::Red,
-        severity::WARN => Color::Yellow,
-        severity::INFO => Color::Green,
-        severity::DEBUG | severity::TRACE => Color::DarkGray,
-        _ => Color::Gray,
-    }
-}
+// Bar colours now come from `crate::theme::Theme::histogram_bar`.
 
 fn format_micros_short(micros: i64) -> String {
     if micros == i64::MIN || micros == 0 {
@@ -55,7 +46,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// Render the cached histogram. The caller (App) owns the cache so this pane
 /// stays free of work on every redraw.
-pub fn render(f: &mut Frame, area: Rect, h: &Histogram) {
+pub fn render(f: &mut Frame, area: Rect, h: &Histogram, theme: crate::theme::Theme) {
     let block = Block::default().title(" timeline ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -85,7 +76,7 @@ pub fn render(f: &mut Frame, area: Rect, h: &Histogram) {
     for bin in &h.bins {
         let frac = (bin.count * bar_steps) / peak;
         let ch = BAR_CHARS[frac.min(bar_steps) as usize];
-        let style = Style::default().fg(severity_color(bin.dominant_severity()));
+        let style = theme.histogram_bar(bin.dominant_severity());
         bar_line_spans.push(Span::styled(ch.to_string(), style));
     }
 

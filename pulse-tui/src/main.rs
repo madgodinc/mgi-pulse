@@ -8,6 +8,7 @@
 
 mod app;
 mod panes;
+mod theme;
 
 use std::io::{self, BufReader, IsTerminal};
 use std::path::PathBuf;
@@ -73,6 +74,11 @@ struct Cli {
     #[arg(long, value_name = "FORMAT")]
     format: Option<String>,
 
+    /// Colour theme: `dark` (default), `light`, or `nocolor`. The
+    /// MGI_PULSE_THEME env var sets the same thing without a flag.
+    #[arg(long, value_name = "THEME")]
+    theme: Option<String>,
+
     /// Deprecated legacy flag. Mouse is on by default now; pass
     /// `--no-mouse` to disable.
     #[arg(long, default_value_t = false, hide = true)]
@@ -96,6 +102,15 @@ fn run() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
+
+    // Validate --theme up front so a typo fails before we do any work.
+    let theme = match cli.theme.as_deref() {
+        Some(s) => match theme::Theme::parse(s) {
+            Some(t) => t,
+            None => anyhow::bail!("unknown --theme value '{}'; valid: dark, light, nocolor", s),
+        },
+        None => theme::Theme::from_env_or_default(),
+    };
 
     if cli.files.is_empty() && std::io::stdin().is_terminal() {
         eprintln!(
@@ -214,7 +229,7 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let app = app::App::new(engine, source_label, cli.columns);
+    let app = app::App::new(engine, source_label, cli.columns, theme);
     app::run(app, !cli.no_mouse)
 }
 

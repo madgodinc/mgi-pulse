@@ -11,7 +11,7 @@ use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
 use mgi_pulse_core::engine::Engine;
 use mgi_pulse_core::schema::{project_field, unquote_if_string};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
@@ -47,16 +47,9 @@ pub fn snap_cursor(filtered_view: &[u64], cursor: u64) -> Option<u64> {
     Some(filtered_view[0])
 }
 
-fn severity_style(sev: u8) -> Style {
-    let color = match sev {
-        severity::ERROR | severity::FATAL => Color::Red,
-        severity::WARN => Color::Yellow,
-        severity::INFO => Color::Reset,
-        severity::DEBUG | severity::TRACE => Color::DarkGray,
-        _ => Color::Reset,
-    };
-    Style::default().fg(color)
-}
+// Severity styling now lives in `crate::theme::Theme::severity_style`;
+// this pane reads it through the `theme` argument so `--theme=light` /
+// `nocolor` work without a separate code path here.
 
 /// Convert microseconds since epoch to `YYYY-MM-DDTHH:MM:SS.ffffff` (UTC).
 /// Mirror of the indexer's parser. Returns an owned `String`; this is only
@@ -106,6 +99,7 @@ pub fn render(
     cursor: u64,
     title: &str,
     max_columns: Option<usize>,
+    theme: crate::theme::Theme,
 ) {
     let block = Block::default().title(title).borders(Borders::ALL);
     let inner = block.inner(area);
@@ -202,26 +196,24 @@ pub fn render(
         let bytes = engine.line_bytes(line_id);
 
         let row_style = if line_id == cursor {
-            Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD)
+            theme.cursor_row_style()
         } else {
             Style::default()
         };
 
         let mut spans = vec![Span::styled(
             format!("{:>1$}", line_id, COL_LINE_W),
-            Style::default().fg(Color::DarkGray),
+            theme.hint_dim(),
         )];
         if show_ts {
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(format_ts_utc(ts), severity_style(sev)));
+            spans.push(Span::styled(format_ts_utc(ts), theme.severity_style(sev)));
         }
         if show_level {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 format!("{:<1$}", severity::name(sev), COL_LV_W),
-                severity_style(sev).add_modifier(Modifier::BOLD),
+                theme.severity_style(sev).add_modifier(Modifier::BOLD),
             ));
         }
         for col in &auto_cols {

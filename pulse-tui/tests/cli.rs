@@ -182,6 +182,31 @@ fn gzip_file_is_decompressed_transparently() {
 }
 
 #[test]
+fn theme_flag_accepts_known_values() {
+    for theme in &["dark", "light", "nocolor", "mono"] {
+        Command::cargo_bin("mgi-pulse")
+            .unwrap()
+            .arg("--dry-run")
+            .arg(format!("--theme={}", theme))
+            .arg(fixture("structured.ndjson"))
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn unknown_theme_value_is_rejected() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg("--theme=neon")
+        .arg(fixture("structured.ndjson"))
+        .assert()
+        .failure()
+        .stderr(contains("unknown --theme"));
+}
+
+#[test]
 fn unknown_format_value_is_rejected() {
     Command::cargo_bin("mgi-pulse")
         .unwrap()

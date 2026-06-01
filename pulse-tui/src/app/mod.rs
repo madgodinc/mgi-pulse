@@ -25,7 +25,6 @@ use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
 use mgi_pulse_core::engine::{query, Engine};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
@@ -369,10 +368,17 @@ pub struct App {
     pub tab_hitboxes: Vec<(u16, u16, u16, usize)>,
     /// CLI cap on the number of auto-columns. None means unbounded.
     pub max_columns: Option<usize>,
+    /// Active colour theme.
+    pub theme: crate::theme::Theme,
 }
 
 impl App {
-    pub fn new(engine: Engine, source_label: String, max_columns: Option<usize>) -> Self {
+    pub fn new(
+        engine: Engine,
+        source_label: String,
+        max_columns: Option<usize>,
+        theme: crate::theme::Theme,
+    ) -> Self {
         // Default tab set: All, then one tab per severity bucket. Each is a
         // SeverityMinPredicate, so "Error" means error+fatal, "Warn" means
         // warn+ above, etc. Keeps the temporal order intact within each tab.
@@ -398,6 +404,7 @@ impl App {
             input: None,
             tab_hitboxes: Vec::new(),
             max_columns,
+            theme,
         }
     }
 
@@ -552,12 +559,9 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     };
                     let label = format!(" {}{} ", v.title, suffix);
                     let style = if i == app.active_tab {
-                        Style::default()
-                            .bg(Color::Blue)
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
+                        app.theme.active_tab_style()
                     } else {
-                        Style::default().fg(Color::DarkGray)
+                        app.theme.inactive_tab_style()
                     };
                     let label_w = label.chars().count() as u16;
                     app.tab_hitboxes.push((col, row, label_w, i));
@@ -572,7 +576,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             let v = &app.views[app.active_tab];
             if let Some(slot) = timeline_slot {
                 if let Some((_, _, h)) = &v.histogram_cache {
-                    timeline::render(f, outer[slot], h);
+                    timeline::render(f, outer[slot], h, app.theme);
                 }
             }
 
@@ -596,6 +600,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     v.cursor,
                     &title,
                     app.max_columns,
+                    app.theme,
                 );
                 detail::render(f, split[1], &app.engine, v.cursor);
             } else {
@@ -608,6 +613,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     v.cursor,
                     &title,
                     app.max_columns,
+                    app.theme,
                 );
             }
 
@@ -621,22 +627,17 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
 
             // Hint with `/` (and other primary actions) painted brighter than
             // the rest so the user sees the entry points at a glance.
-            let bright = Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD);
-            let dim = Style::default().fg(Color::DarkGray);
+            let bright = app.theme.hint_bright();
+            let dim = app.theme.hint_dim();
             let mut hint_spans: Vec<Span> = Vec::new();
             // The leading status line / prompt.
             if !prompt_label.is_empty() {
                 hint_spans.push(Span::styled(
                     format!("{} {}_", prompt_label, prompt_buf),
-                    Style::default().fg(Color::White),
+                    bright,
                 ));
             } else {
-                hint_spans.push(Span::styled(
-                    v.status_msg.clone(),
-                    Style::default().add_modifier(Modifier::DIM),
-                ));
+                hint_spans.push(Span::styled(v.status_msg.clone(), dim));
             }
             hint_spans.push(Span::raw("   "));
             // Primary actions in bright; everything else dim.
