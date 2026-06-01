@@ -16,6 +16,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
+/// Width of the gutter that shows the bookmark marker on bookmarked
+/// rows. Always present so the rest of the table doesn't shift when a
+/// bookmark is toggled.
+const COL_GUTTER_W: usize = 1;
 const COL_LINE_W: usize = 9;
 const COL_TS_W: usize = 24;
 const COL_LV_W: usize = 6;
@@ -100,6 +104,7 @@ pub fn render(
     title: &str,
     max_columns: Option<usize>,
     theme: crate::theme::Theme,
+    bookmarks: &[u64],
 ) {
     let block = Block::default().title(title).borders(Borders::ALL);
     let inner = block.inner(area);
@@ -122,7 +127,9 @@ pub fn render(
     let show_level = engine.has_severity();
     let show_columns = engine.has_structured_fields();
 
-    let fixed_w = COL_LINE_W as u16
+    let fixed_w = COL_GUTTER_W as u16
+        + 1
+        + COL_LINE_W as u16
         + 1
         + if show_ts { COL_TS_W as u16 + 1 } else { 0 }
         + if show_level { COL_LV_W as u16 + 1 } else { 0 };
@@ -148,11 +155,15 @@ pub fn render(
     let visible = inner.height as usize;
     let mut lines: Vec<Line> = Vec::with_capacity(visible.saturating_add(1));
 
-    // Header row.
-    let mut header_spans = vec![Span::styled(
-        format!("{:>1$}", "line", COL_LINE_W),
-        Style::default().add_modifier(Modifier::DIM),
-    )];
+    // Header row. Gutter spacer first so columns align with body rows.
+    let mut header_spans = vec![
+        Span::raw(" "),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:>1$}", "line", COL_LINE_W),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ];
     if show_ts {
         header_spans.push(Span::raw(" "));
         header_spans.push(Span::styled(
@@ -201,10 +212,16 @@ pub fn render(
             Style::default()
         };
 
-        let mut spans = vec![Span::styled(
-            format!("{:>1$}", line_id, COL_LINE_W),
-            theme.hint_dim(),
-        )];
+        let is_bookmarked = bookmarks.binary_search(&line_id).is_ok();
+        let gutter = if is_bookmarked { "★" } else { " " };
+        let mut spans = vec![
+            Span::styled(
+                gutter.to_string(),
+                Style::default().fg(ratatui::style::Color::Yellow),
+            ),
+            Span::raw(" "),
+            Span::styled(format!("{:>1$}", line_id, COL_LINE_W), theme.hint_dim()),
+        ];
         if show_ts {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(format_ts_utc(ts), theme.severity_style(sev)));

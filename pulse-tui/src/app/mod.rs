@@ -115,6 +115,10 @@ pub struct View {
     pub histogram_cache: Option<(u64, u16, Histogram)>,
     /// Monotonically incremented every time the filter set changes.
     pub generation: u64,
+    /// Bookmarked line_ids, sorted. Used by the `b` (toggle) and `B`
+    /// (jump-to-next) keys. Per-view because each tab has its own
+    /// investigation context; not persisted to disk in v0.1.
+    pub bookmarks: Vec<u64>,
 }
 
 impl View {
@@ -143,6 +147,57 @@ impl View {
             status_msg,
             histogram_cache: None,
             generation: 0,
+            bookmarks: Vec::new(),
+        }
+    }
+
+    /// Toggle the bookmark on the focused record. Sorted insert preserves
+    /// the order `bookmarks` invariant.
+    fn toggle_bookmark(&mut self) {
+        match self.bookmarks.binary_search(&self.cursor) {
+            Ok(idx) => {
+                self.bookmarks.remove(idx);
+            }
+            Err(idx) => {
+                self.bookmarks.insert(idx, self.cursor);
+            }
+        }
+    }
+
+    /// Jump to the next bookmark after the cursor, wrapping to the first
+    /// when past the end. Returns `false` if there are no bookmarks.
+    fn jump_next_bookmark(&mut self) -> bool {
+        if self.bookmarks.is_empty() {
+            return false;
+        }
+        let next = match self.bookmarks.binary_search(&self.cursor) {
+            Ok(idx) => {
+                // Cursor is already on a bookmark — pick the one after.
+                self.bookmarks[(idx + 1) % self.bookmarks.len()]
+            }
+            Err(idx) => {
+                // Cursor is between bookmarks — pick the first one at or
+                // after this position; wrap if none.
+                if idx >= self.bookmarks.len() {
+                    self.bookmarks[0]
+                } else {
+                    self.bookmarks[idx]
+                }
+            }
+        };
+        // Only move if the target is in the current filtered view.
+        if table::lower_bound(&self.filtered_view, next) < self.filtered_view.len()
+            && self
+                .filtered_view
+                .get(table::lower_bound(&self.filtered_view, next))
+                == Some(&next)
+        {
+            self.cursor = next;
+            self.scroll_top = next;
+            true
+        } else {
+            // Bookmark was filtered out by the active predicate set.
+            false
         }
     }
 
@@ -601,6 +656,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     &title,
                     app.max_columns,
                     app.theme,
+                    &v.bookmarks,
                 );
                 detail::render(f, split[1], &app.engine, v.cursor);
             } else {
@@ -614,6 +670,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     &title,
                     app.max_columns,
                     app.theme,
+                    &v.bookmarks,
                 );
             }
 
@@ -654,12 +711,16 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 hint_spans.push(Span::styled(" min-mode · ", dim));
                 hint_spans.push(Span::styled("d", bright));
                 hint_spans.push(Span::styled(" detail · ", dim));
+                hint_spans.push(Span::styled("b/B", bright));
+                hint_spans.push(Span::styled(" mark/jump · ", dim));
                 hint_spans.push(Span::styled("Tab", bright));
                 hint_spans.push(Span::styled(" next · ", dim));
             } else {
                 // Plain-text: only the keys that actually do something.
                 hint_spans.push(Span::styled("d", bright));
                 hint_spans.push(Span::styled(" context · ", dim));
+                hint_spans.push(Span::styled("b/B", bright));
+                hint_spans.push(Span::styled(" mark/jump · ", dim));
             }
             hint_spans.push(Span::styled("Esc", bright));
             hint_spans.push(Span::styled(" clear · ", dim));
@@ -837,6 +898,20 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 app.active().cursor_to_end();
                                 wheel_delta = 0;
                             }
+                            (KeyCode::Char('b'), _) => {
+                                app.active().toggle_bookmark();
+                            }
+                            (KeyCode::Char('B'), _) => {
+                                if !app.active().jump_next_bookmark() {
+                                    let n = app.active().bookmarks.len();
+                                    app.active().status_msg = if n == 0 {
+                                        "no bookmarks (press `b` to add)".to_string()
+                                    } else {
+                                        format!("no bookmarks in the active filter ({} hidden)", n)
+                                    };
+                                }
+                                wheel_delta = 0;
+                            }
                             _ => {}
                         }
                     }
@@ -948,6 +1023,49 @@ mod tests {
         let total_info_in_info_view: u64 = h_info.bins.iter().map(|b| b.info).sum();
         assert_eq!(total_error_in_error_view, 5);
         assert_eq!(total_info_in_info_view, 5);
+    }
+
+    /// Bookmarks toggle on the focused line and survive cursor movement
+    /// inside the same view.
+    #[test]
+    fn bookmark_toggle_round_trip() {
+        let records: Vec<(i64, u8)> = (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let engine = synthetic_engine(&records);
+        let mut view = View::new_all(&engine);
+        view.cursor = 2;
+
+        view.toggle_bookmark();
+        assert_eq!(view.bookmarks, vec![2]);
+        view.cursor = 4;
+        view.toggle_bookmark();
+        assert_eq!(view.bookmarks, vec![2, 4]);
+        view.cursor = 2;
+        view.toggle_bookmark();
+        assert_eq!(view.bookmarks, vec![4]);
+    }
+
+    /// `B` cycles through bookmarks in order and wraps after the last.
+    #[test]
+    fn bookmark_jump_cycles_through_marks() {
+        let records: Vec<(i64, u8)> = (0..10).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let engine = synthetic_engine(&records);
+        let mut view = View::new_all(&engine);
+
+        for lid in [1u64, 4, 7] {
+            view.cursor = lid;
+            view.toggle_bookmark();
+        }
+        // From line 0, B should land on 1.
+        view.cursor = 0;
+        assert!(view.jump_next_bookmark());
+        assert_eq!(view.cursor, 1);
+        // From 1, B advances to 4, then 7, then wraps to 1.
+        assert!(view.jump_next_bookmark());
+        assert_eq!(view.cursor, 4);
+        assert!(view.jump_next_bookmark());
+        assert_eq!(view.cursor, 7);
+        assert!(view.jump_next_bookmark());
+        assert_eq!(view.cursor, 1);
     }
 
     /// `Esc` clears every active filter and the view returns to all records,
