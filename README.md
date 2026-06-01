@@ -30,10 +30,25 @@ macOS and Windows builds are CI-checked but not shipped yet.
 mgi-pulse app.log.ndjson            # open one file
 mgi-pulse a.ndjson b.ndjson         # k-way merge by timestamp
 tail -F live.log | mgi-pulse -      # stream from stdin
+mgi-pulse anything.log              # plain text works too — see "less-mode"
 ```
 
 Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `f`
-opens a `field=value` filter, `d` toggles the detail pane, `q` quits.
+opens a `field=value` filter, `t` jumps to a timestamp, `d` toggles the
+detail pane, `q` quits.
+
+### Less-mode (plain-text fallback)
+
+If the file has no parseable JSON structure (e.g. `log4j`/`logback`
+defaults, raw stdout, Clojure println output), `mgi-pulse` collapses
+into a `less`-style view: line numbers + raw payload across the full
+width, no empty columns, no empty severity tabs. Regex search and
+cursor navigation still work. The detail pane (`d`) becomes a
+±5-line context viewer so multi-line stack traces read as a block.
+
+That makes it useful as a no-config `less` replacement even when the
+input is unstructured — just without the typed table you get on
+NDJSON.
 
 ## Features (v0.1)
 
@@ -55,7 +70,8 @@ opens a `field=value` filter, `d` toggles the detail pane, `q` quits.
 | `q` | Quit | Or `Ctrl-C`. |
 | `/` | Open regex search | `Enter` applies, `Esc` cancels. |
 | `f` | Open `field=value` filter | Composes with regex (AND). |
-| `d` | Toggle detail pane | Pretty-printed JSON for the cursor row. |
+| `t` | Jump to a timestamp | RFC3339 prefix, e.g. `2026-06-01T12:00`. |
+| `d` | Toggle detail pane | Pretty-printed JSON for NDJSON, ±5 lines of context for plain-text. |
 | `m` | Toggle severity strict / min-mode | `Warn` vs `Warn+`. |
 | `0` | Clear severity filter | On the active tab. |
 | `1` | Severity = Error+Fatal | Quick filter. |
@@ -69,7 +85,16 @@ opens a `field=value` filter, `d` toggles the detail pane, `q` quits.
 | `Up` / `Down` | Move cursor | One row. |
 | `PageUp` / `PageDown` | Move cursor | 20 rows. |
 | `g` / `G` | Jump to start / end | |
-| Mouse wheel | Scroll | Opt-in with `--mouse`. |
+| Mouse wheel | Scroll | One row per tick. Enabled by default. |
+| Mouse click | Click a tab to switch | Click in the tab bar only. |
+
+### Mouse capture and terminal selection
+
+Mouse capture is on by default so the wheel scrolls the table and you can
+click tabs. That intercepts text selection too — to copy a line, hold
+**Shift** while you drag the mouse and the terminal handles the selection
+directly. (Standard TUI convention, works in WezTerm, Alacritty,
+GNOME-Terminal, Konsole, iTerm2.)
 
 ## What it doesn't do (yet)
 
@@ -79,6 +104,10 @@ opens a `field=value` filter, `d` toggles the detail pane, `q` quits.
   yet click or scroll along the time axis to jump.
 - **Other log formats.** NDJSON only, plus a raw fallback for lines that don't
   parse. logfmt, plain text with regex extraction, CEE/syslog — not yet.
+- **EDN logs (Clojure).** EDN looks JSON-shaped to the eye (`{:ts "..."
+  :level :error :msg "..."}`) but is not JSON, so `mgi-pulse` currently
+  drops to less-mode on EDN streams. Planned for v0.2 — track it in the
+  EDN support issue.
 - **Stack-trace folding.** Multi-line Go / Rust / Java tracebacks are not
   collapsed into one row.
 - **Themes.** Colours are fixed (severity-coded).

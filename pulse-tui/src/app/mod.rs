@@ -16,14 +16,15 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyModifiers, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyModifiers, MouseEventKind,
 };
 use mgi_pulse_core::engine::histogram::Histogram;
 use mgi_pulse_core::engine::predicate::{
     AndPredicate, FieldEqualsPredicate, Predicate, RegexBytesPredicate,
     SeverityInPredicate,
 };
-use mgi_pulse_core::engine::record::severity;
+use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
+use mgi_pulse_core::engine::parse::parse_rfc3339_micros;
 use mgi_pulse_core::engine::{query, Engine};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -33,6 +34,26 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
 use crate::panes::{detail, table, timeline};
+
+/// Take whatever timestamp prefix the user typed (`2026-06-01`,
+/// `2026-06-01T12:00`, etc) and pad it to a full RFC3339 string before
+/// handing it to the parser. Returns `None` if even the padded string
+/// fails to parse — that means the input was structurally wrong, not just
+/// short.
+fn parse_partial_rfc3339(s: &str) -> Option<i64> {
+    let s = s.trim();
+    // Allowed lengths and the suffix that makes each one a full RFC3339.
+    let padded: String = match s.len() {
+        4 => format!("{}-01-01T00:00:00Z", s),
+        7 => format!("{}-01T00:00:00Z", s),
+        10 => format!("{}T00:00:00Z", s),
+        13 => format!("{}:00:00Z", s),
+        16 => format!("{}:00Z", s),
+        19 => format!("{}Z", s),
+        _ => s.to_string(),
+    };
+    parse_rfc3339_micros(&padded)
+}
 
 /// Given a set of severity levels, return the same set plus every level
 /// ranked above the highest one. Used by Min-mode: choosing `Warn` with
@@ -57,6 +78,10 @@ fn expand_min(levels: &[u8]) -> Vec<u8> {
 pub enum Input {
     Search(String),
     Filter(String),
+    /// Jump to the nearest record at/after the given timestamp. Accepts
+    /// any prefix of an RFC3339 string ("2026-06-01", "2026-06-01T12:00",
+    /// "2026-06-01T12:00:00Z"); shorter prefixes are padded with zeros.
+    JumpTime(String),
 }
 
 /// One tab's worth of state. Everything that can differ between tabs lives
@@ -154,6 +179,35 @@ impl View {
             self.cursor = last;
             let i = self.filtered_view.len().saturating_sub(20);
             self.scroll_top = self.filtered_view[i];
+        }
+    }
+
+    /// Jump the cursor to the first record whose timestamp is at or after
+    /// `target_micros`. Returns false if no such record exists in the
+    /// current filtered view (e.g. all records are earlier).
+    fn jump_to_time(&mut self, target_micros: i64, engine: &Engine) -> bool {
+        if self.filtered_view.is_empty() {
+            return false;
+        }
+        // The filtered_view is sorted by line_id, not ts; we have to scan.
+        // For 11M records this still takes only ~10 ms because we touch one
+        // i64 per entry, no parse. binary_search-by-ts is a v0.2 backlog if
+        // it ever shows up in a profile.
+        let mut best: Option<u64> = None;
+        for &lid in &self.filtered_view {
+            let t = engine.indexes.time.get(lid).unwrap_or(TS_UNTIMED);
+            if t != TS_UNTIMED && t >= target_micros {
+                best = Some(lid);
+                break;
+            }
+        }
+        if let Some(lid) = best {
+            self.cursor = lid;
+            self.scroll_top = lid;
+            true
+        } else {
+            self.status_msg = "no records at/after that time".to_string();
+            false
         }
     }
 
@@ -304,6 +358,10 @@ pub struct App {
     pub views: Vec<View>,
     pub active_tab: usize,
     pub input: Option<Input>,
+    /// Layout-driven clickable regions captured during the last `draw`.
+    /// Mouse handlers consult these to translate raw (col, row) into
+    /// app-level actions like "switch tab N".
+    pub tab_hitboxes: Vec<(u16, u16, u16, usize)>,
 }
 
 impl App {
@@ -339,6 +397,7 @@ impl App {
             views,
             active_tab: 0,
             input: None,
+            tab_hitboxes: Vec::new(),
         }
     }
 
@@ -451,12 +510,18 @@ fn run_loop<B: ratatui::backend::Backend>(
             let status_slot = slot + 1;
 
             // Tabs bar. Each tab shows `Title` (strict) or `Title+` (min mode
-            // expanded — Warn+ means warn AND everything above).
+            // expanded — Warn+ means warn AND everything above). Hitboxes
+            // captured here are used by the mouse handler to switch tabs on
+            // click.
+            app.tab_hitboxes.clear();
             if let Some(slot) = tabs_slot {
                 let mut tab_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
+                let mut col: u16 = outer[slot].x;
+                let row = outer[slot].y;
                 for (i, v) in app.views.iter().enumerate() {
                     if i > 0 {
                         tab_spans.push(Span::raw(" "));
+                        col += 1;
                     }
                     let suffix = if v.severity_min_mode && !v.severity_levels.is_empty() {
                         "+"
@@ -469,6 +534,9 @@ fn run_loop<B: ratatui::backend::Backend>(
                     } else {
                         Style::default().fg(Color::DarkGray)
                     };
+                    let label_w = label.chars().count() as u16;
+                    app.tab_hitboxes.push((col, row, label_w, i));
+                    col += label_w;
                     tab_spans.push(Span::styled(label, style));
                 }
                 let tabs_line = Paragraph::new(Line::from(tab_spans));
@@ -517,26 +585,61 @@ fn run_loop<B: ratatui::backend::Backend>(
             }
 
             // Status bar.
-            let prompt = match &app.input {
-                Some(Input::Search(s)) => format!("/ {}_", s),
-                Some(Input::Filter(s)) => format!("f {}_", s),
-                None => v.status_msg.clone(),
+            let (prompt_label, prompt_buf) = match &app.input {
+                Some(Input::Search(s)) => ("/", s.as_str()),
+                Some(Input::Filter(s)) => ("f", s.as_str()),
+                Some(Input::JumpTime(s)) => ("t", s.as_str()),
+                None => ("", ""),
             };
-            let status = Paragraph::new(Line::from(vec![
-                Span::styled(prompt, Style::default().add_modifier(Modifier::DIM)),
-                Span::raw("  "),
-                Span::styled(
-                    if show_tabs {
-                        "q quit · / regex · f field=val · 1-4 severity · m min-mode · d detail · Tab next · Esc clear"
-                    } else {
-                        // Plain-text fallback: only the keys that actually do
-                        // anything are advertised.
-                        "q quit · / regex · ↑↓ PgUp PgDn g G · Esc clear"
-                    },
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-            .block(Block::default().borders(Borders::NONE));
+
+            // Hint with `/` (and other primary actions) painted brighter than
+            // the rest so the user sees the entry points at a glance.
+            let bright = Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD);
+            let dim = Style::default().fg(Color::DarkGray);
+            let mut hint_spans: Vec<Span> = Vec::new();
+            // The leading status line / prompt.
+            if !prompt_label.is_empty() {
+                hint_spans.push(Span::styled(
+                    format!("{} {}_", prompt_label, prompt_buf),
+                    Style::default().fg(Color::White),
+                ));
+            } else {
+                hint_spans.push(Span::styled(
+                    v.status_msg.clone(),
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+            }
+            hint_spans.push(Span::raw("   "));
+            // Primary actions in bright; everything else dim.
+            hint_spans.push(Span::styled("/", bright));
+            hint_spans.push(Span::styled(" search · ", dim));
+            if show_tabs {
+                hint_spans.push(Span::styled("f", bright));
+                hint_spans.push(Span::styled(" field=val · ", dim));
+                hint_spans.push(Span::styled("t", bright));
+                hint_spans.push(Span::styled(" time · ", dim));
+                hint_spans.push(Span::styled("1-4", bright));
+                hint_spans.push(Span::styled(" severity · ", dim));
+                hint_spans.push(Span::styled("m", bright));
+                hint_spans.push(Span::styled(" min-mode · ", dim));
+                hint_spans.push(Span::styled("d", bright));
+                hint_spans.push(Span::styled(" detail · ", dim));
+                hint_spans.push(Span::styled("Tab", bright));
+                hint_spans.push(Span::styled(" next · ", dim));
+            } else {
+                // Plain-text: only the keys that actually do something.
+                hint_spans.push(Span::styled("d", bright));
+                hint_spans.push(Span::styled(" context · ", dim));
+            }
+            hint_spans.push(Span::styled("Esc", bright));
+            hint_spans.push(Span::styled(" clear · ", dim));
+            hint_spans.push(Span::styled("q", bright));
+            hint_spans.push(Span::styled(" quit", dim));
+
+            let status = Paragraph::new(Line::from(hint_spans))
+                .block(Block::default().borders(Borders::NONE));
             f.render_widget(status, outer[status_slot]);
         })?;
 
@@ -567,14 +670,32 @@ fn run_loop<B: ratatui::backend::Backend>(
                                 let engine = &app.engine;
                                 app.views[app.active_tab].add_field_filter(&raw, engine);
                             }
+                            (Input::JumpTime(buf), KeyCode::Enter) => {
+                                let raw = buf.clone();
+                                app.input = None;
+                                match parse_partial_rfc3339(&raw) {
+                                    Some(target) => {
+                                        let engine_ref = &app.engine;
+                                        if !app.views[app.active_tab]
+                                            .jump_to_time(target, engine_ref)
+                                        {
+                                            // status_msg already set
+                                        }
+                                    }
+                                    None => {
+                                        app.views[app.active_tab].status_msg =
+                                            format!("unrecognized time: '{}'", raw);
+                                    }
+                                }
+                            }
                             (
-                                Input::Search(buf) | Input::Filter(buf),
+                                Input::Search(buf) | Input::Filter(buf) | Input::JumpTime(buf),
                                 KeyCode::Backspace,
                             ) => {
                                 buf.pop();
                             }
                             (
-                                Input::Search(buf) | Input::Filter(buf),
+                                Input::Search(buf) | Input::Filter(buf) | Input::JumpTime(buf),
                                 KeyCode::Char(c),
                             ) => {
                                 buf.push(c);
@@ -609,6 +730,9 @@ fn run_loop<B: ratatui::backend::Backend>(
                             }
                             (KeyCode::Char('f'), _) => {
                                 app.input = Some(Input::Filter(String::new()));
+                            }
+                            (KeyCode::Char('t'), _) if app.engine.has_timestamps() => {
+                                app.input = Some(Input::JumpTime(String::new()));
                             }
                             (KeyCode::Char('d'), _) => {
                                 let v = app.active();
@@ -676,9 +800,17 @@ fn run_loop<B: ratatui::backend::Backend>(
                         }
                     }
                 }
-                Event::Mouse(MouseEvent { kind, .. }) => match kind {
+                Event::Mouse(me) => match me.kind {
                     MouseEventKind::ScrollUp => wheel_delta -= 1,
                     MouseEventKind::ScrollDown => wheel_delta += 1,
+                    MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                        for &(x, y, w, idx) in &app.tab_hitboxes {
+                            if me.row == y && me.column >= x && me.column < x + w {
+                                app.active_tab = idx;
+                                break;
+                            }
+                        }
+                    }
                     _ => {}
                 },
                 Event::Resize(_, _) => {}
