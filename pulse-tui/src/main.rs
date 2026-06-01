@@ -204,6 +204,9 @@ fn ingest_file(path: &PathBuf, engine: &mut Engine, fields: Option<FieldNames>) 
         producer = producer.with_fields(f);
     }
     engine.mmaps.push(producer.mmap());
+    engine
+        .source_formats
+        .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
     let total_bytes = producer.total_bytes();
     indexer::drain(&mut producer, engine);
     engine.indexes.parse_stats.fold(producer.stats());
@@ -229,6 +232,9 @@ fn ingest_merged(paths: &[PathBuf], engine: &mut Engine, fields: Option<FieldNam
             producer = producer.with_fields(f);
         }
         engine.mmaps.push(producer.mmap());
+        engine
+            .source_formats
+            .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
         total_bytes += producer.total_bytes();
         producers.push(Box::new(producer));
     }
@@ -256,6 +262,11 @@ fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
     if let Some(f) = fields {
         producer = producer.with_fields(f);
     }
+    // Stream source slot. Format is hardcoded NDJSON in v0.1; the engine
+    // looks this up to drive the per-source FieldCache.
+    engine
+        .source_formats
+        .push(mgi_pulse_core::engine::format::LogFormat::Ndjson);
     // The stream path doesn't use mmaps; engine.mmaps stays empty. The
     // renderer routes stream rows through `owned_lines` and never touches
     // mmaps[source_id], so a missing entry is fine here.

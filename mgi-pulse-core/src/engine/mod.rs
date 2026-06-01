@@ -11,6 +11,7 @@
 
 pub mod record;
 
+pub mod format;
 pub mod histogram;
 pub mod indexer;
 pub mod indexes;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 
 use memmap2::Mmap;
 
+use crate::engine::format::LogFormat;
 use crate::engine::indexer::Indexes;
 use crate::schema::{LockedSchema, SchemaBuilder, FILE_WARMUP_LINES};
 
@@ -45,6 +47,10 @@ pub struct Engine {
     /// never changed; the indexer asserts `line_id - stream_base ==
     /// owned_lines.len()` before each push.
     pub stream_base: Option<u64>,
+    /// Per-source format. Mirrors `mmaps` for file sources and grows
+    /// alongside it when streams join. Predicates look up
+    /// `source_formats[source_id]` to dispatch parsing.
+    pub source_formats: Vec<LogFormat>,
     /// Frozen-after-warmup schema. None until `scan_schema` runs.
     pub schema: Option<LockedSchema>,
 }
@@ -56,8 +62,18 @@ impl Engine {
             mmaps: Vec::new(),
             owned_lines: Vec::new(),
             stream_base: None,
+            source_formats: Vec::new(),
             schema: None,
         }
+    }
+
+    /// Lookup the format of one source. Falls back to NDJSON if the
+    /// index is empty (single-source pipelines populate slot 0 only).
+    pub fn format_of(&self, source_id: u32) -> LogFormat {
+        self.source_formats
+            .get(source_id as usize)
+            .copied()
+            .unwrap_or(LogFormat::Ndjson)
     }
 
     /// Resolve a single line's bytes. Returns the slice or `&[]` if the

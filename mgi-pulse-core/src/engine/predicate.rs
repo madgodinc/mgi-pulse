@@ -9,16 +9,25 @@
 
 use regex::bytes::Regex;
 
+use crate::engine::format::FieldCache;
 use crate::engine::record::RawRecord;
-use crate::schema::{project_field, unquote_if_string};
 
 /// Decision: does this record match? Predicates take raw bytes (the actual
 /// log line, post-mmap-resolve) plus the parsed record header.
 ///
 /// The trait is intentionally tiny. A predicate is a pure function of its
 /// inputs; matching twice for the same record must return the same answer.
+/// Predicate evaluation contract.
+///
+/// `cache` is a per-record cache of parsed field values. Field-aware
+/// predicates (field-equals, future SQL-DSL field clauses) read through
+/// `cache.get(key)` so the parse cost is paid at most once per field per
+/// record, regardless of how many predicates need that field.
+///
+/// Predicates that don't need field-level access (regex over the whole
+/// raw line) call `cache.raw()` to read the underlying bytes directly.
 pub trait Predicate: Send + Sync {
-    fn matches(&self, rec: &RawRecord, line_bytes: &[u8]) -> bool;
+    fn matches(&self, rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool;
 }
 
 pub struct RegexBytesPredicate {
@@ -33,8 +42,8 @@ impl RegexBytesPredicate {
 }
 
 impl Predicate for RegexBytesPredicate {
-    fn matches(&self, _rec: &RawRecord, line_bytes: &[u8]) -> bool {
-        self.re.is_match(line_bytes)
+    fn matches(&self, _rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        self.re.is_match(cache.raw())
     }
 }
 
@@ -57,9 +66,9 @@ impl FieldEqualsPredicate {
 }
 
 impl Predicate for FieldEqualsPredicate {
-    fn matches(&self, _rec: &RawRecord, line_bytes: &[u8]) -> bool {
-        match project_field(line_bytes, &self.field) {
-            Some(raw) => unquote_if_string(raw) == self.value,
+    fn matches(&self, _rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        match cache.get(&self.field) {
+            Some(v) => v == self.value,
             None => false,
         }
     }
@@ -88,7 +97,7 @@ impl SeverityInPredicate {
 }
 
 impl Predicate for SeverityInPredicate {
-    fn matches(&self, rec: &RawRecord, _line_bytes: &[u8]) -> bool {
+    fn matches(&self, rec: &RawRecord, _cache: &mut FieldCache<'_>) -> bool {
         (self.mask >> rec.severity) & 1 == 1
     }
 }
@@ -122,14 +131,15 @@ impl Default for AndPredicate {
 }
 
 impl Predicate for AndPredicate {
-    fn matches(&self, rec: &RawRecord, line_bytes: &[u8]) -> bool {
-        self.parts.iter().all(|p| p.matches(rec, line_bytes))
+    fn matches(&self, rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        self.parts.iter().all(|p| p.matches(rec, cache))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::format::LogFormat;
     use crate::engine::record::{severity, RecordBytes};
 
     fn fake_rec() -> RawRecord {
@@ -142,43 +152,44 @@ mod tests {
         }
     }
 
+    fn check(p: &dyn Predicate, line: &[u8]) -> bool {
+        let r = fake_rec();
+        let mut cache = FieldCache::new(LogFormat::Ndjson, line);
+        p.matches(&r, &mut cache)
+    }
+
+    fn check_with(p: &dyn Predicate, rec: &RawRecord, line: &[u8]) -> bool {
+        let mut cache = FieldCache::new(LogFormat::Ndjson, line);
+        p.matches(rec, &mut cache)
+    }
+
     #[test]
     fn regex_matches_substring() {
         let p = RegexBytesPredicate::new("erro").unwrap();
-        let r = fake_rec();
-        assert!(p.matches(&r, br#"{"level":"error","msg":"boom"}"#));
-        assert!(!p.matches(&r, br#"{"level":"info","msg":"ok"}"#));
+        assert!(check(&p, br#"{"level":"error","msg":"boom"}"#));
+        assert!(!check(&p, br#"{"level":"info","msg":"ok"}"#));
     }
 
     #[test]
     fn regex_handles_non_utf8() {
-        // (?-u) disables Unicode mode so \xff matches the literal byte rather
-        // than the Unicode codepoint U+00FF (which would be encoded as two
-        // bytes in UTF-8).
         let p = RegexBytesPredicate::new(r"(?-u)\xff{3}").unwrap();
-        let r = fake_rec();
-        assert!(p.matches(&r, b"\xff\xff\xff payload"));
-        // Negative case: a single 0xff is not three in a row.
-        assert!(!p.matches(&r, b"\xff payload"));
+        assert!(check(&p, b"\xff\xff\xff payload"));
+        assert!(!check(&p, b"\xff payload"));
     }
 
     #[test]
     fn field_equals_unquotes_string_values() {
         let p = FieldEqualsPredicate::new("level", "error");
-        let r = fake_rec();
-        assert!(p.matches(&r, br#"{"level":"error","msg":"x"}"#));
-        assert!(!p.matches(&r, br#"{"level":"info","msg":"x"}"#));
-        assert!(!p.matches(&r, br#"{"msg":"no level here"}"#));
+        assert!(check(&p, br#"{"level":"error","msg":"x"}"#));
+        assert!(!check(&p, br#"{"level":"info","msg":"x"}"#));
+        assert!(!check(&p, br#"{"msg":"no level here"}"#));
     }
 
     #[test]
     fn field_equals_works_on_numeric() {
         let p = FieldEqualsPredicate::new("status", "200");
-        let r = fake_rec();
-        // Numeric value: project_field returns "200", unquote_if_string
-        // leaves it unchanged.
-        assert!(p.matches(&r, br#"{"status":200}"#));
-        assert!(!p.matches(&r, br#"{"status":404}"#));
+        assert!(check(&p, br#"{"status":200}"#));
+        assert!(!check(&p, br#"{"status":404}"#));
     }
 
     #[test]
@@ -186,17 +197,15 @@ mod tests {
         let mut and = AndPredicate::new();
         and.push(Box::new(FieldEqualsPredicate::new("level", "error")));
         and.push(Box::new(RegexBytesPredicate::new("boom").unwrap()));
-        let r = fake_rec();
-        assert!(and.matches(&r, br#"{"level":"error","msg":"boom"}"#));
-        assert!(!and.matches(&r, br#"{"level":"error","msg":"ok"}"#));
-        assert!(!and.matches(&r, br#"{"level":"info","msg":"boom"}"#));
+        assert!(check(&and, br#"{"level":"error","msg":"boom"}"#));
+        assert!(!check(&and, br#"{"level":"error","msg":"ok"}"#));
+        assert!(!check(&and, br#"{"level":"info","msg":"boom"}"#));
     }
 
     #[test]
     fn empty_and_matches_everything() {
         let and = AndPredicate::new();
-        let r = fake_rec();
-        assert!(and.matches(&r, b"anything"));
+        assert!(check(&and, b"anything"));
     }
 
     #[test]
@@ -204,15 +213,15 @@ mod tests {
         let p = SeverityInPredicate::new(&[severity::ERROR, severity::FATAL]);
         let mut r = fake_rec();
         r.severity = severity::ERROR;
-        assert!(p.matches(&r, b""));
+        assert!(check_with(&p, &r, b""));
         r.severity = severity::FATAL;
-        assert!(p.matches(&r, b""));
+        assert!(check_with(&p, &r, b""));
         r.severity = severity::WARN;
-        assert!(!p.matches(&r, b""));
+        assert!(!check_with(&p, &r, b""));
         r.severity = severity::INFO;
-        assert!(!p.matches(&r, b""));
+        assert!(!check_with(&p, &r, b""));
         r.severity = severity::TRACE;
-        assert!(!p.matches(&r, b""));
+        assert!(!check_with(&p, &r, b""));
     }
 
     #[test]
@@ -220,10 +229,21 @@ mod tests {
         let p = SeverityInPredicate::new(&[severity::WARN]);
         let mut r = fake_rec();
         r.severity = severity::WARN;
-        assert!(p.matches(&r, b""));
+        assert!(check_with(&p, &r, b""));
         r.severity = severity::ERROR;
-        assert!(!p.matches(&r, b""));
+        assert!(!check_with(&p, &r, b""));
         r.severity = severity::INFO;
-        assert!(!p.matches(&r, b""));
+        assert!(!check_with(&p, &r, b""));
+    }
+
+    #[test]
+    fn and_predicate_shares_field_cache_across_predicates() {
+        // Two field-equals on the same key should hit the cache the
+        // second time. The test runs without instrumentation; the
+        // intent is that this works at all under the new contract.
+        let mut and = AndPredicate::new();
+        and.push(Box::new(FieldEqualsPredicate::new("level", "error")));
+        and.push(Box::new(FieldEqualsPredicate::new("level", "error")));
+        assert!(check(&and, br#"{"level":"error"}"#));
     }
 }

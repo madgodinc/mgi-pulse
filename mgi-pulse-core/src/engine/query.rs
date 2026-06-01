@@ -10,17 +10,40 @@
 //! byte access via mmap is ~12 GB/s. A regex scan over 11M lines lands well
 //! below the 100 ms first-paint gate (M1.a) and is comfortable as the M1
 //! search implementation.
+//!
+//! Per-record `FieldCache` (engine::format) is built and reset between
+//! records so multi-field predicates pay the parse cost at most once per
+//! field per record, regardless of how the AndPredicate composes them.
 
+use crate::engine::format::{FieldCache, LogFormat};
 use crate::engine::predicate::Predicate;
 use crate::engine::Engine;
 
 pub fn scan(engine: &Engine, predicate: &dyn Predicate) -> Vec<u64> {
     let mut matches = Vec::new();
     let total = engine.indexes.len() as u64;
+    if total == 0 {
+        return matches;
+    }
+    // Build the cache once, reset between records.
+    let first_bytes = engine.line_bytes(0);
+    let first_fmt = engine
+        .indexes
+        .line
+        .get(0)
+        .map(|loc| engine.format_of(loc.source_id))
+        .unwrap_or(LogFormat::Ndjson);
+    let mut cache = FieldCache::new(first_fmt, first_bytes);
     for line_id in 0..total {
         let bytes = engine.line_bytes(line_id);
         let rec = synth_record(engine, line_id);
-        if predicate.matches(&rec, bytes) {
+        let fmt = engine.format_of(rec.source_id);
+        if fmt != cache.format() {
+            cache = FieldCache::new(fmt, bytes);
+        } else {
+            cache.reset(bytes);
+        }
+        if predicate.matches(&rec, &mut cache) {
             matches.push(line_id);
         }
     }
