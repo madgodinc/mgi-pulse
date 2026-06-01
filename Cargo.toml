@@ -3,6 +3,12 @@ resolver = "2"
 members = [
     "mgi-pulse-core",
     "pulse-tui",
+    "bench/parse-bench",
+]
+# parse-bench is an internal measurement tool, not part of the shipped binary.
+default-members = [
+    "mgi-pulse-core",
+    "pulse-tui",
 ]
 
 [workspace.package]

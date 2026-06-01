@@ -17,7 +17,11 @@ pub mod stream;
 
 use crate::engine::record::RawRecord;
 
-pub trait RecordProducer: Send {
+/// Note: not `Send`. The M1 indexer is single-threaded; producers may hold
+/// `!Send` handles (e.g. `StdinLock`). When the indexer moves to a dedicated
+/// thread (M1.5 with merge), the trait gains the `Send` bound and producers
+/// will need to oblige.
+pub trait RecordProducer {
     /// Blocking pull of the next record. None = EOF (static) or stream closed.
     fn next(&mut self) -> Option<RawRecord>;
 

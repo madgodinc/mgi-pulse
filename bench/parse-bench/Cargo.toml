@@ -1,0 +1,21 @@
+[package]
+name = "parse-bench"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+description = "Internal measurement tool for mgi-pulse — compare NDJSON ts/level extraction strategies"
+
+[dependencies]
+memmap2.workspace = true
+memchr.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+# Alternate parsers under test.
+simd-json = { version = "0.14", default-features = false, features = ["serde_impl"] }
+
+[[bin]]
+name = "parse-bench"
+path = "src/main.rs"

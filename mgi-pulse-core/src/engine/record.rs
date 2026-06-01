@@ -15,10 +15,68 @@
 /// the untimed bucket and are excluded from the time axis.
 pub const TS_UNTIMED: i64 = i64::MIN;
 
+/// Severity enum, byte-sized for the parallel `SeverityIndex`.
+///
+/// Values are stable across releases — they hit disk in v0.2's on-disk index
+/// format. Treat them as a wire format, not an internal enum to reshuffle.
+pub mod severity {
+    pub const UNKNOWN: u8 = 0;
+    pub const TRACE: u8 = 1;
+    pub const DEBUG: u8 = 2;
+    pub const INFO: u8 = 3;
+    pub const WARN: u8 = 4;
+    pub const ERROR: u8 = 5;
+    pub const FATAL: u8 = 6;
+
+    /// Match the byte form of `level` against the enum. Case-insensitive on
+    /// ASCII. Returns `UNKNOWN` for unrecognized values — the hot path never
+    /// allocates.
+    pub fn from_bytes(b: &[u8]) -> u8 {
+        // Equality on lowercased ASCII without allocating: compare against
+        // both lower and upper forms in fixed tables. The set is small enough
+        // that an open-coded match wins over a HashMap.
+        match b.len() {
+            4 => match b {
+                b"INFO" | b"Info" | b"info" => INFO,
+                b"WARN" | b"Warn" | b"warn" => WARN,
+                _ => UNKNOWN,
+            },
+            5 => match b {
+                b"TRACE" | b"Trace" | b"trace" => TRACE,
+                b"DEBUG" | b"Debug" | b"debug" => DEBUG,
+                b"ERROR" | b"Error" | b"error" => ERROR,
+                b"FATAL" | b"Fatal" | b"fatal" => FATAL,
+                _ => UNKNOWN,
+            },
+            7 => match b {
+                b"WARNING" | b"Warning" | b"warning" => WARN,
+                _ => UNKNOWN,
+            },
+            _ => UNKNOWN,
+        }
+    }
+
+    pub fn name(s: u8) -> &'static str {
+        match s {
+            TRACE => "trace",
+            DEBUG => "debug",
+            INFO => "info",
+            WARN => "warn",
+            ERROR => "error",
+            FATAL => "fatal",
+            _ => "?",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RecordBytes {
     Owned(Box<[u8]>),
-    FileRef { source_id: u32, offset: u64, len: u32 },
+    FileRef {
+        source_id: u32,
+        offset: u64,
+        len: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -35,9 +93,29 @@ pub struct RawRecord {
     /// could be extracted and no honest fallback applies.
     pub ts_micros: i64,
 
-    /// Severity as a small enum byte. Parsed by a borrowed serde struct, not
-    /// a hand-rolled byte scanner.
+    /// Severity as a small enum byte. See `severity::*` constants.
     pub severity: u8,
 
     pub bytes: RecordBytes,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::severity::*;
+
+    #[test]
+    fn level_byte_matching() {
+        assert_eq!(from_bytes(b"info"), INFO);
+        assert_eq!(from_bytes(b"INFO"), INFO);
+        assert_eq!(from_bytes(b"Info"), INFO);
+        assert_eq!(from_bytes(b"warn"), WARN);
+        assert_eq!(from_bytes(b"warning"), WARN);
+        assert_eq!(from_bytes(b"error"), ERROR);
+        assert_eq!(from_bytes(b"fatal"), FATAL);
+        assert_eq!(from_bytes(b"trace"), TRACE);
+        assert_eq!(from_bytes(b"debug"), DEBUG);
+        assert_eq!(from_bytes(b"weird"), UNKNOWN);
+        assert_eq!(from_bytes(b""), UNKNOWN);
+        assert_eq!(from_bytes(b"DEBUGX"), UNKNOWN);
+    }
 }
