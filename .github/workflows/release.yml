@@ -1,0 +1,69 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux-musl:
+    name: Build x86_64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --bin mgi-pulse --target x86_64-unknown-linux-musl
+
+      - name: Strip binary
+        run: strip target/x86_64-unknown-linux-musl/release/mgi-pulse
+
+      - name: Package tarball
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/mgi-pulse dist/
+          cp README.md CHANGELOG.md LICENSE dist/
+          tar -C dist -czf mgi-pulse-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz \
+            mgi-pulse README.md CHANGELOG.md LICENSE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mgi-pulse-linux-musl
+          path: mgi-pulse-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux-musl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          body_path: CHANGELOG.md
+          draft: true
+          generate_release_notes: false

@@ -6,7 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "TUI log navigator: not browse logs, navigate them"
+description = "TUI log navigator for local NDJSON files: not browse logs, navigate them"
+readme = "../README.md"
+keywords = ["log", "tui", "viewer", "ndjson"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "mgi-pulse"
