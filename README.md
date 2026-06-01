@@ -2,6 +2,8 @@
 
 A local-only TUI navigator for structured logs. Not browse logs, navigate them.
 
+![mgi-pulse opened on a 2 GB NDJSON file — timeline at the top, severity tabs, auto-derived columns](docs/screenshots/01-hero-ndjson.png)
+
 ## Why
 
 Most log tools either tail text (`less`, `tail -F`) or ship a pipeline (Loki,
@@ -61,6 +63,8 @@ opens the query DSL, `f` opens a `field=value` filter, `t` jumps to a
 timestamp, `d` toggles the detail pane, `b` bookmarks the focused row,
 `q` quits.
 
+![Detail pane open on a record — pretty-printed JSON beside the table](docs/screenshots/02-detail-pane.png)
+
 ### Query DSL
 
 Press `:` to enter a one-line query. Compiles into the same filter
@@ -80,12 +84,16 @@ are reported in the status bar before any scan.
 
 ### Less-mode (plain-text fallback)
 
+![Less-mode on a Clojure log4j file — line numbers and raw payload, no empty columns](docs/screenshots/03-less-mode.png)
+
 If the file has no parseable structure (e.g. `log4j`/`logback`
 defaults, raw stdout, Clojure println output), `mgi-pulse` collapses
 into a `less`-style view: line numbers + raw payload across the full
 width, no empty columns, no empty severity tabs. Regex search, the
 DSL, and cursor navigation still work. The detail pane (`d`) shows
 ±5 lines of context so multi-line stack traces read as a block.
+
+![Detail pane in less-mode — ±5 lines of stack-trace context beside the focused row](docs/screenshots/04-less-mode-context.png)
 
 This makes the binary useful as a no-config `less` replacement even
 when the input is unstructured — you just lose the typed table.
