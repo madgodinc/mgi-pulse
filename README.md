@@ -82,6 +82,8 @@ Operators: `=`, `!=`, `~/regex/`, and `>`, `>=`, `<`, `<=` (the
 comparison ops only apply to `ts`). Compose with `AND`. Syntax errors
 are reported in the status bar before any scan.
 
+![DSL filter narrowing 11 M records to 204 K matches with one expression](docs/screenshots/05-dsl-query.png)
+
 ### Less-mode (plain-text fallback)
 
 ![Less-mode on a Clojure log4j file — line numbers and raw payload, no empty columns](docs/screenshots/03-less-mode.png)
