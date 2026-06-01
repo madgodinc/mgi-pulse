@@ -1,0 +1,6 @@
+{"ts":"2026-06-01T12:00:00Z","level":"info","msg":"timed 1"}
+{"ts":"2026-06-01T12:00:01Z","level":"info","msg":"timed 2"}
+{"ts":"2026-06-01T12:00:02Z","level":"info","msg":"timed 3"}
+not json at all
+also not json
+{"ts":"2026-06-01T12:00:03Z","level":"warn","msg":"timed 4"}

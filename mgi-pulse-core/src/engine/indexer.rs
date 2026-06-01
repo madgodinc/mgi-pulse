@@ -61,7 +61,35 @@ pub fn drain<P: crate::io::RecordProducer>(producer: &mut P, engine: &mut crate:
                     offset: 0,
                     len: boxed.len() as u32,
                 });
-                engine.owned_lines.insert(line_id, boxed);
+                engine.push_owned(line_id, boxed);
+            }
+            RecordBytes::FileRefMulti { source_id, spans } => {
+                // Producers don't emit this variant in v0.1 — the type is
+                // reserved for the multi-line story in the format dispatch
+                // phase. If we ever see it, concatenate the spans into an
+                // Owned buffer and index as a stream record.
+                let line_id = engine.indexes.line.locs.len() as u64;
+                let mut joined: Vec<u8> = Vec::new();
+                // Resolve the mmap once and copy each span. Spans within a
+                // single source share a mmap; deeper resolution lives in
+                // engine::line_bytes.
+                if let Some(mmap) = engine.mmaps.get(source_id as usize) {
+                    for (offset, len) in &spans {
+                        let start = *offset as usize;
+                        let end = start + *len as usize;
+                        if end <= mmap.len() {
+                            joined.extend_from_slice(&mmap[start..end]);
+                            joined.push(b'\n');
+                        }
+                    }
+                }
+                let total_len = joined.len() as u32;
+                engine.indexes.line.locs.push(LineLoc {
+                    source_id,
+                    offset: 0,
+                    len: total_len,
+                });
+                engine.push_owned(line_id, joined.into_boxed_slice());
             }
         }
         engine.indexes.time.ts.push(rec.ts_micros);

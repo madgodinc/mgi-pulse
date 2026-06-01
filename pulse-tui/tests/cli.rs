@@ -96,3 +96,41 @@ fn no_args_with_empty_stdin_completes_cleanly() {
         .assert()
         .success();
 }
+
+// --- Interaction tests added in round 2 (V01_REVIEW critic pass).
+// These exist to catch bug classes the happy-path tests above miss.
+
+#[test]
+fn mixed_timed_majority_keeps_structured_mode() {
+    // 4 timed records + 2 plain → majority is timed → has_timestamps()
+    // stays true → less-mode does NOT kick in. Regression test for the
+    // ">50% threshold" rule (Q6 in V01_REVIEW). Untimed in this fixture
+    // are the 2 plain-text lines that fail JSON parse entirely.
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(fixture("mixed-timed.ndjson"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 6 records"))
+        .stdout(contains("untimed: 2"))
+        .stdout(contains("json errors: 2"))
+        // schema warmup saw the structured majority, so auto-columns are
+        // derived from the JSON fields. msg is the most-present.
+        .stdout(contains("\"msg\""));
+}
+
+#[test]
+fn mostly_plain_minority_json_falls_into_less_mode() {
+    // One JSON line out of seven → minority → has_timestamps() / has_severity()
+    // both stay false → less-mode wins. The single JSON line still appears in
+    // the table as raw, just no timeline or severity tabs.
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(fixture("mostly-plain.log"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 7 records"))
+        .stdout(contains("untimed: 7"));
+}

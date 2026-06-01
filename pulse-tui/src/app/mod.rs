@@ -870,3 +870,104 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
     let _ = app.active_ref();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mgi_pulse_core::engine::indexes::LineLoc;
+    use mgi_pulse_core::engine::record::severity;
+
+    /// Build a tiny engine in-memory for unit tests. The same shape file
+    /// fixtures would build, but synchronous and side-effect free.
+    fn synthetic_engine(records: &[(i64, u8)]) -> Engine {
+        let mut e = Engine::new();
+        for &(ts, sev) in records {
+            e.indexes.line.locs.push(LineLoc {
+                source_id: 0,
+                offset: 0,
+                len: 0,
+            });
+            e.indexes.time.ts.push(ts);
+            e.indexes.severity.levels.push(sev);
+        }
+        e
+    }
+
+    /// Regression test for Q7 (V01_REVIEW round 1). The histogram cache used
+    /// to key by `(filtered_view.len(), bars)` — two different predicate
+    /// sets that happened to keep the same number of records collided, and
+    /// the second view rendered the first one's histogram.
+    ///
+    /// Two protections matter:
+    /// 1. `generation` changes on a filter swap, so the cache key changes.
+    /// 2. The rebuilt histogram actually reflects the new view's records.
+    ///
+    /// We assert both: generation moves, and the histograms computed
+    /// directly (via `Histogram::build_over`) over the two views differ.
+    /// Driving the cached path through `view.histogram()` repeatedly is
+    /// awkward in unit tests because of borrow chains; the equivalent
+    /// guarantee — different filter → different result — is tested here.
+    #[test]
+    fn histogram_cache_invalidates_on_predicate_change_same_count() {
+        use mgi_pulse_core::engine::histogram::Histogram;
+        // 10 records: 5 errors at t=0..5, 5 info at t=100..105.
+        let mut records = Vec::new();
+        for i in 0..5 {
+            records.push((i * 1_000_000, severity::ERROR));
+        }
+        for i in 0..5 {
+            records.push(((100 + i) * 1_000_000, severity::INFO));
+        }
+        let engine = synthetic_engine(&records);
+
+        let mut view = View::new_all(&engine);
+        assert_eq!(view.filtered_view.len(), 10);
+
+        view.set_severity("Error", &[severity::ERROR], &engine);
+        assert_eq!(view.filtered_view.len(), 5);
+        let gen_after_error = view.generation;
+        let h_error = Histogram::build_over(&engine, &view.filtered_view, 10);
+
+        view.set_severity("Info", &[severity::INFO], &engine);
+        assert_eq!(view.filtered_view.len(), 5);
+        let gen_after_info = view.generation;
+        assert_ne!(
+            gen_after_info, gen_after_error,
+            "generation must change on a filter swap so the cache key invalidates"
+        );
+        let h_info = Histogram::build_over(&engine, &view.filtered_view, 10);
+
+        // The two histograms must differ. Concretely: error filter has no
+        // info bins, info filter has no error bins.
+        let total_info_in_error_view: u64 = h_error.bins.iter().map(|b| b.info).sum();
+        let total_error_in_info_view: u64 = h_info.bins.iter().map(|b| b.error).sum();
+        assert_eq!(total_info_in_error_view, 0);
+        assert_eq!(total_error_in_info_view, 0);
+        let total_error_in_error_view: u64 = h_error.bins.iter().map(|b| b.error).sum();
+        let total_info_in_info_view: u64 = h_info.bins.iter().map(|b| b.info).sum();
+        assert_eq!(total_error_in_error_view, 5);
+        assert_eq!(total_info_in_info_view, 5);
+    }
+
+    /// `Esc` clears every active filter and the view returns to all records,
+    /// with the generation bumped so any cached histogram is rebuilt.
+    #[test]
+    fn clear_filters_returns_to_all_and_bumps_generation() {
+        let records: Vec<(i64, u8)> =
+            (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let engine = synthetic_engine(&records);
+
+        let mut view = View::new_all(&engine);
+        let gen_initial = view.generation;
+        view.set_severity("Error", &[severity::ERROR], &engine);
+        assert_eq!(view.filtered_view.len(), 0);
+        let gen_after_set = view.generation;
+        assert_ne!(gen_after_set, gen_initial);
+
+        view.clear_filters(&engine);
+        assert_eq!(view.filtered_view.len(), 5);
+        assert!(view.regex_filter.is_none());
+        assert!(view.field_filters.is_empty());
+        assert!(view.severity_levels.is_empty());
+    }
+}

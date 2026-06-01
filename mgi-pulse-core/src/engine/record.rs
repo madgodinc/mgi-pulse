@@ -71,11 +71,29 @@ pub mod severity {
 
 #[derive(Debug, Clone)]
 pub enum RecordBytes {
+    /// Owned bytes — stream-side (stdin), or a multi-line record assembled
+    /// from non-contiguous spans (rare; e.g. interleaved stack traces).
     Owned(Box<[u8]>),
+    /// Single contiguous span inside the source's mmap. Multi-line records
+    /// whose continuation lines are physically adjacent in the file (the
+    /// common case for stack traces emitted by one thread) get a `len`
+    /// extended to cover the whole block — still zero-copy.
     FileRef {
         source_id: u32,
         offset: u64,
         len: u32,
+    },
+    /// Multiple non-contiguous spans inside the same source's mmap. This is
+    /// the rare case: a multi-line record whose continuation lines are
+    /// interleaved with other records (e.g. two threads writing stack
+    /// traces in parallel). Resolving requires concatenation, so
+    /// `Engine::line_bytes` returns owned bytes; the variant exists in v0.1
+    /// to lock down the on-disk format ahead of the format dispatch work,
+    /// not to be emitted yet.
+    #[allow(dead_code)]
+    FileRefMulti {
+        source_id: u32,
+        spans: Vec<(u64, u32)>,
     },
 }
 

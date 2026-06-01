@@ -18,7 +18,6 @@ pub mod parse;
 pub mod predicate;
 pub mod query;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use memmap2::Mmap;
@@ -35,12 +34,17 @@ pub struct Engine {
     /// don't need an entry — their bytes are owned. We still keep an entry
     /// (a zero-length Arc) per source to keep the index dense.
     pub mmaps: Vec<Arc<Mmap>>,
-    /// For stream sources, the owned bytes per record are stored sparsely —
-    /// only stream records take space. Previously this was a parallel
-    /// `Vec<Option<Box<[u8]>>>`, which spent ~16 B per file record on empty
-    /// `None` slots (a fat pointer + Option discriminant, ~176 MB on the
-    /// 11M-record fixture). The HashMap is empty for pure-file pipelines.
-    pub owned_lines: HashMap<u64, Box<[u8]>>,
+    /// Stream-source owned bytes, indexed by `line_id - stream_base`. Stream
+    /// records are append-only with dense, monotonic line_ids; a Vec by
+    /// offset-from-base resolves in O(1) without the hash overhead a HashMap
+    /// pays on every render and predicate evaluation. Empty for pure-file
+    /// pipelines.
+    pub owned_lines: Vec<Box<[u8]>>,
+    /// First `line_id` that belongs to the stream source. `None` until the
+    /// first owned record arrives. Set once at the start of streaming and
+    /// never changed; the indexer asserts `line_id - stream_base ==
+    /// owned_lines.len()` before each push.
+    pub stream_base: Option<u64>,
     /// Frozen-after-warmup schema. None until `scan_schema` runs.
     pub schema: Option<LockedSchema>,
 }
@@ -50,21 +54,28 @@ impl Engine {
         Self {
             indexes: Indexes::default(),
             mmaps: Vec::new(),
-            owned_lines: HashMap::new(),
+            owned_lines: Vec::new(),
+            stream_base: None,
             schema: None,
         }
     }
 
     /// Resolve a single line's bytes. Returns the slice or `&[]` if the
     /// `line_id` is out of range. Cheap and synchronous — UI calls this in
-    /// the render path.
+    /// the render path. Stream rows go through a dense Vec by offset; file
+    /// rows resolve to the per-source mmap.
     pub fn line_bytes(&self, line_id: u64) -> &[u8] {
         let loc = match self.indexes.line.get(line_id) {
             Some(l) => l,
             None => return &[],
         };
-        if let Some(b) = self.owned_lines.get(&line_id) {
-            return b;
+        if let Some(base) = self.stream_base {
+            if line_id >= base {
+                let idx = (line_id - base) as usize;
+                if let Some(b) = self.owned_lines.get(idx) {
+                    return b;
+                }
+            }
         }
         let mmap = match self.mmaps.get(loc.source_id as usize) {
             Some(m) => m,
@@ -76,6 +87,22 @@ impl Engine {
             return &[];
         }
         &mmap[start..end]
+    }
+
+    /// Push an owned (stream) record into dense storage. The indexer calls
+    /// this; sets `stream_base` on first owned record so subsequent records
+    /// land at `line_id - base`.
+    pub fn push_owned(&mut self, line_id: u64, bytes: Box<[u8]>) {
+        if self.stream_base.is_none() {
+            self.stream_base = Some(line_id);
+        }
+        let base = self.stream_base.unwrap();
+        debug_assert_eq!(
+            (line_id - base) as usize,
+            self.owned_lines.len(),
+            "stream records must arrive in monotonic line_id order"
+        );
+        self.owned_lines.push(bytes);
     }
 
     /// Build the locked schema by scanning the first `min(FILE_WARMUP_LINES,
@@ -94,10 +121,21 @@ impl Engine {
     /// Rescan the schema across an arbitrary set of records — useful when the
     /// initial warmup landed on a boot banner or other unrepresentative
     /// prefix and the user hits `R` to retry over the filtered view.
+    ///
+    /// Samples a window **centered on the middle** of `line_ids` rather than
+    /// the first N. Sampling the first N would degenerate to a no-op when
+    /// `line_ids = [0..len)` (the same prefix the original warmup saw) — the
+    /// whole point of `R` is to escape that prefix.
     pub fn rescan_schema(&mut self, line_ids: &[u64]) {
-        let cap = (line_ids.len()).min(FILE_WARMUP_LINES);
+        let n = line_ids.len();
+        if n == 0 {
+            return;
+        }
+        let window = n.min(FILE_WARMUP_LINES);
+        let start = n.saturating_sub(window) / 2;
+        let end = start + window;
         let mut sb = SchemaBuilder::new();
-        for &line_id in &line_ids[..cap] {
+        for &line_id in &line_ids[start..end] {
             let bytes = self.line_bytes(line_id);
             sb.scan(bytes);
         }
