@@ -26,7 +26,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Terminal;
 
-use crate::panes::{detail, table};
+use crate::panes::{detail, table, timeline};
 
 /// Input mode for the prompt at the bottom of the screen.
 #[derive(Debug, Clone)]
@@ -235,8 +235,14 @@ fn run_loop<B: ratatui::backend::Backend>(
             let area = f.area();
             let outer = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(3), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Length(4),  // timeline
+                    Constraint::Min(3),     // table (and detail when open)
+                    Constraint::Length(1),  // status
+                ])
                 .split(area);
+
+            timeline::render(f, outer[0], &app.engine);
 
             let title = format!(
                 "mgi-pulse  {}  [{} rows]",
@@ -248,7 +254,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                    .split(outer[0]);
+                    .split(outer[1]);
                 table::render(
                     f,
                     split[0],
@@ -262,7 +268,7 @@ fn run_loop<B: ratatui::backend::Backend>(
             } else {
                 table::render(
                     f,
-                    outer[0],
+                    outer[1],
                     &app.engine,
                     &app.filtered_view,
                     app.scroll_top,
@@ -285,7 +291,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                 ),
             ]))
             .block(Block::default().borders(Borders::NONE));
-            f.render_widget(status, outer[1]);
+            f.render_widget(status, outer[2]);
         })?;
 
         if !event::poll(Duration::from_millis(100))? {
