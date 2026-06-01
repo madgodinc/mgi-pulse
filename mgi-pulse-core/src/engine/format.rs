@@ -75,11 +75,18 @@ impl LogFormat {
     /// stack-trace `^\s+at ...` for Java, `^\s+File "..."` for Python).
     /// v0.1 NDJSON treats every newline as a record boundary, so this is
     /// always false; later formats override.
-    pub fn is_continuation(self, _line: &[u8]) -> bool {
+    pub fn is_continuation(self, line: &[u8]) -> bool {
         match self {
+            // NDJSON records are always one valid JSON per line; nothing
+            // legitimately continues onto the next line.
             LogFormat::Ndjson => false,
-            LogFormat::Logfmt => false,
-            LogFormat::Edn => false,
+            // For logfmt and EDN we use the `^\s+` heuristic: a line that
+            // starts with whitespace is treated as a continuation of the
+            // record above. This is the common shape of Java / Python /
+            // Ruby stack traces and most exception serialisations.
+            LogFormat::Logfmt | LogFormat::Edn => {
+                matches!(line.first(), Some(&b' ') | Some(&b'\t'))
+            }
         }
     }
 

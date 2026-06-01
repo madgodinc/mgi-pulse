@@ -23,6 +23,7 @@ use mgi_pulse_core::engine::{indexer, Engine};
 use mgi_pulse_core::io::compressed::{open_decompressed, Compression};
 use mgi_pulse_core::io::file::FileProducer;
 use mgi_pulse_core::io::merge::MergeProducer;
+use mgi_pulse_core::io::multiline::MultiLineProducer;
 use mgi_pulse_core::io::stream::StreamProducer;
 use mgi_pulse_core::io::RecordProducer;
 
@@ -260,8 +261,10 @@ fn ingest_file(
         }
         producer = producer.with_format(fmt);
         engine.source_formats.push(fmt);
-        indexer::drain(&mut producer, engine);
-        engine.indexes.parse_stats.fold(producer.stats());
+        // Multi-line wrapper folds `^\s+` continuation lines into the
+        // preceding record for formats that support it (logfmt, EDN).
+        let mut multiline = MultiLineProducer::new(producer, fmt);
+        indexer::drain(&mut multiline, engine);
         let dt = t0.elapsed();
         tracing::info!(
             path = %path.display(),
@@ -345,8 +348,8 @@ fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>, fmt: LogFormat)
     // The stream path doesn't use mmaps; engine.mmaps stays empty. The
     // renderer routes stream rows through `owned_lines` and never touches
     // mmaps[source_id], so a missing entry is fine here.
-    indexer::drain(&mut producer, engine);
-    engine.indexes.parse_stats.fold(producer.stats());
+    let mut multiline = MultiLineProducer::new(producer, fmt);
+    indexer::drain(&mut multiline, engine);
     let dt = t0.elapsed();
     tracing::info!(
         records = engine.indexes.len(),
