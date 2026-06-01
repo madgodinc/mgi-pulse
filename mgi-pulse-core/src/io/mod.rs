@@ -17,6 +17,7 @@ pub mod file;
 pub mod merge;
 pub mod multiline;
 pub mod stream;
+pub mod tail;
 
 use crate::engine::record::RawRecord;
 

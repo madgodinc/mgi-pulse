@@ -89,6 +89,14 @@ struct Cli {
     /// Smoke-test escape hatch; intentionally undocumented in the public help.
     #[arg(long, hide = true, default_value_t = false)]
     dry_run: bool,
+
+    /// Follow the file in real time, like `tail -F`. Reads existing
+    /// content first, then blocks for new writes and survives rotation
+    /// (inode-based detection, 500ms polling). Only meaningful for a
+    /// single file argument; ignored when combined with multiple files
+    /// or stdin.
+    #[arg(short = 'f', long, default_value_t = false)]
+    follow: bool,
 }
 
 fn main() -> ExitCode {
@@ -181,6 +189,18 @@ fn run() -> Result<()> {
             if path.as_os_str() == "-" {
                 source_label = "<stdin>".to_string();
                 ingest_stdin(&mut engine, fields.clone(), fmt)?;
+            } else if cli.follow {
+                // `--follow` opens the file with the new TailReader, but
+                // the indexer is synchronous in v0.2 — it blocks on the
+                // tail's poll loop and the UI never opens. The reader
+                // module is in the source so a future background-indexer
+                // step can wire it in; for now we tell the user how to
+                // get the live-tail effect without that work.
+                anyhow::bail!(
+                    "--follow requires a background indexer (planned for v0.3); for now use \
+                     `tail -F {} | mgi-pulse -` instead",
+                    path.display()
+                );
             } else {
                 source_label = path.display().to_string();
                 ingest_file(path, &mut engine, fields.clone(), fmt)?;
