@@ -2,7 +2,7 @@
 
 A local-only TUI navigator for structured logs. Not browse logs, navigate them.
 
-![mgi-pulse opened on a 2 GB NDJSON file — timeline at the top, severity tabs, auto-derived columns](docs/screenshots/01-hero-ndjson.png)
+![mgi-pulse on a 2 GB / 11 M-record NDJSON fixture: a stacked-band timeline reads an incident from across 25 minutes of logs, severity tabs with the framed active tab on the left, typed auto-columns](docs/screenshots/01-hero-ndjson.png)
 
 ## Why
 
@@ -82,7 +82,9 @@ Operators: `=`, `!=`, `~/regex/`, and `>`, `>=`, `<`, `<=` (the
 comparison ops only apply to `ts`). Compose with `AND`. Syntax errors
 are reported in the status bar before any scan.
 
-![DSL filter narrowing 11 M records to 204 K matches with one expression](docs/screenshots/05-dsl-query.png)
+![DSL filter `logger=aurora.tts AND msg~/timeout/` narrows 11 M records to 203 698 matches; the timeline and the table both update to the result set](docs/screenshots/05-dsl-query.png)
+
+![Severity tab filtering on Warn — same dataset, only the Warn band stays lit in the timeline; framed active tab makes the current view unambiguous at a glance](docs/screenshots/06-severity-tab.png)
 
 ### Less-mode (plain-text fallback)
 
