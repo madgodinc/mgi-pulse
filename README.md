@@ -39,6 +39,9 @@ mgi-pulse app.log.ndjson            # open one file
 mgi-pulse a.ndjson b.ndjson         # k-way merge by timestamp
 tail -F live.log | mgi-pulse -      # stream from stdin
 mgi-pulse anything.log              # plain text works too — see "less-mode"
+mgi-pulse app.log.gz                # gzip auto-detected by magic bytes
+mgi-pulse app.log.zst               # zstd too
+mgi-pulse --format=logfmt go.log    # Go / Heroku-style key=value pairs
 ```
 
 Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `f`
@@ -139,8 +142,9 @@ away.
   `tail -F file | mgi-pulse -`.
 - **Timeline scrubbing or zoom.** The histogram is a static overview; you can't
   yet click or scroll along the time axis to jump.
-- **Other log formats.** NDJSON only, plus a raw fallback for lines that don't
-  parse. logfmt, plain text with regex extraction, CEE/syslog — not yet.
+- **Other log formats.** NDJSON and logfmt today (auto-detect by content;
+  override with `--format=logfmt`). Plain text with regex extraction,
+  CEE/syslog, Apache/nginx access logs — not yet.
 - **EDN logs (Clojure).** EDN looks JSON-shaped to the eye (`{:ts "..."
   :level :error :msg "..."}`) but is not JSON, so `mgi-pulse` currently
   drops to less-mode on EDN streams. Planned for v0.2 — tracked in

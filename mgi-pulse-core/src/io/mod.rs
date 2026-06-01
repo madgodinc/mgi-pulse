@@ -12,6 +12,7 @@
 //! Native follow / inotify is NOT in v0.1. Live = `tail -F file | pulse -`.
 //! See project memory for the rationale.
 
+pub mod compressed;
 pub mod file;
 pub mod merge;
 pub mod stream;

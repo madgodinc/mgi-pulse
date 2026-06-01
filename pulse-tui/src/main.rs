@@ -19,6 +19,7 @@ use clap::Parser;
 use mgi_pulse_core::engine::format::LogFormat;
 use mgi_pulse_core::engine::parse::FieldNames;
 use mgi_pulse_core::engine::{indexer, Engine};
+use mgi_pulse_core::io::compressed::{open_decompressed, Compression};
 use mgi_pulse_core::io::file::FileProducer;
 use mgi_pulse_core::io::merge::MergeProducer;
 use mgi_pulse_core::io::stream::StreamProducer;
@@ -224,6 +225,35 @@ fn ingest_file(
     fmt: LogFormat,
 ) -> Result<()> {
     let t0 = Instant::now();
+    // Magic-byte sniff first: gzip and zstd take the stream path because
+    // the decompressor doesn't give us mmap, and we'd rather not buffer
+    // 6-8 GB of decompressed NDJSON in RAM up-front.
+    let mut probe =
+        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let compression = Compression::detect(&mut probe)?;
+    drop(probe);
+
+    if compression != Compression::None {
+        let (_, reader) = open_decompressed(path)?;
+        let mut producer = StreamProducer::new(reader, 0);
+        if let Some(f) = fields {
+            producer = producer.with_fields(f);
+        }
+        producer = producer.with_format(fmt);
+        engine.source_formats.push(fmt);
+        indexer::drain(&mut producer, engine);
+        engine.indexes.parse_stats.fold(producer.stats());
+        let dt = t0.elapsed();
+        tracing::info!(
+            path = %path.display(),
+            compression = ?compression,
+            records = engine.indexes.len(),
+            elapsed_ms = dt.as_millis() as u64,
+            "indexed compressed file"
+        );
+        return Ok(());
+    }
+
     let mut producer =
         FileProducer::open(path, 0).with_context(|| format!("open {}", path.display()))?;
     if let Some(f) = fields {

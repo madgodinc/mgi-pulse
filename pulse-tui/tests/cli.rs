@@ -154,6 +154,34 @@ fn logfmt_without_flag_falls_into_less_mode() {
 }
 
 #[test]
+fn gzip_file_is_decompressed_transparently() {
+    use std::io::Write;
+    // Build a temp .gz on the fly so the test doesn't depend on shipping
+    // a binary fixture under git.
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let plain = std::fs::read(format!("{}/tests/fixtures/structured.ndjson", dir)).unwrap();
+    let mut tmp = std::env::temp_dir();
+    tmp.push("mgi-pulse-test-decompress.ndjson.gz");
+    let f = std::fs::File::create(&tmp).unwrap();
+    // Use the same flate2 crate the binary uses; it's already a build dep.
+    let mut enc = flate2::write::GzEncoder::new(f, flate2::Compression::default());
+    enc.write_all(&plain).unwrap();
+    drop(enc);
+
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(&tmp)
+        .assert()
+        .success()
+        .stdout(contains("indexed 4 records"))
+        .stdout(contains("untimed: 0"))
+        .stdout(contains("json errors: 0"));
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+#[test]
 fn unknown_format_value_is_rejected() {
     Command::cargo_bin("mgi-pulse")
         .unwrap()

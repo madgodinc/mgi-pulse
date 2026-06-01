@@ -33,6 +33,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 smol_str = "0.3"
+flate2 = "1"
+zstd = { version = "0.13", default-features = false }
 
 [profile.release]
 lto = "thin"

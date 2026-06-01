@@ -18,3 +18,5 @@ regex.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 smol_str.workspace = true
+flate2.workspace = true
+zstd.workspace = true
