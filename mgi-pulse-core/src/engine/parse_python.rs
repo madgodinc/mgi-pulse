@@ -200,10 +200,7 @@ mod tests {
         // logger/msg come back as bytes after the separator; leading
         // space is part of the field. Real callers (TUI) display them
         // verbatim, no trim.
-        assert_eq!(
-            project_field(line, "logger"),
-            Some("my.module".to_string())
-        );
+        assert_eq!(project_field(line, "logger"), Some("my.module".to_string()));
         assert_eq!(project_field(line, "level"), Some("INFO".to_string()));
         assert_eq!(
             project_field(line, "msg"),

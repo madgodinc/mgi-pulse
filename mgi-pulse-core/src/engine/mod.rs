@@ -11,6 +11,7 @@
 
 pub mod record;
 
+pub mod dsl;
 pub mod format;
 pub mod histogram;
 pub mod indexer;

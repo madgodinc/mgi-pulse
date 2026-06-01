@@ -78,6 +78,9 @@ pub enum Input {
     /// any prefix of an RFC3339 string ("2026-06-01", "2026-06-01T12:00",
     /// "2026-06-01T12:00:00Z"); shorter prefixes are padded with zeros.
     JumpTime(String),
+    /// DSL query — compiled into an AndPredicate. Backed by
+    /// `engine::dsl::compile`.
+    Dsl(String),
 }
 
 /// One tab's worth of state. Everything that can differ between tabs lives
@@ -89,6 +92,10 @@ pub struct View {
     pub scroll_top: u64,
     pub regex_filter: Option<String>,
     pub field_filters: Vec<(String, String)>,
+    /// Last successfully-compiled DSL query, if any. Stored as the
+    /// source string so the title and status bar can show it; the
+    /// compiled predicate is rebuilt each `rebuild_view` call.
+    pub dsl_query: Option<String>,
     /// Severity set to show; empty = no severity filter. Set at tab
     /// creation for the per-severity tabs, and modifiable on any tab via
     /// keys 1-5 / 0.
@@ -140,6 +147,7 @@ impl View {
             scroll_top: 0,
             regex_filter: None,
             field_filters: Vec::new(),
+            dsl_query: None,
             severity_levels: Vec::new(),
             severity_min_mode: false,
             severity_label: String::new(),
@@ -285,7 +293,8 @@ impl View {
     fn rebuild_view(&mut self, engine: &Engine) {
         let has_filter = self.regex_filter.is_some()
             || !self.field_filters.is_empty()
-            || !self.severity_levels.is_empty();
+            || !self.severity_levels.is_empty()
+            || self.dsl_query.is_some();
 
         if !has_filter {
             self.filtered_view = (0..engine.indexes.len() as u64).collect();
@@ -312,6 +321,15 @@ impl View {
                 };
                 and.push(Box::new(SeverityInPredicate::new(&effective)));
             }
+            if let Some(query) = &self.dsl_query {
+                match mgi_pulse_core::engine::dsl::compile(query) {
+                    Ok(p) => and.push(p),
+                    Err(e) => {
+                        self.status_msg = format!("dsl error: {}", e);
+                        return;
+                    }
+                }
+            }
             let predicate: Box<dyn Predicate> = Box::new(and);
             let hits = query::scan(engine, predicate.as_ref());
             let mut parts: Vec<String> = Vec::new();
@@ -327,6 +345,9 @@ impl View {
             }
             for (k, v) in &self.field_filters {
                 parts.push(format!("{}={}", k, v));
+            }
+            if let Some(q) = &self.dsl_query {
+                parts.push(format!(":{}", q));
             }
             self.status_msg = format!(
                 "{}  {} matches of {}",
@@ -391,7 +412,29 @@ impl View {
         self.field_filters.clear();
         self.severity_levels.clear();
         self.severity_label.clear();
+        self.dsl_query = None;
         self.rebuild_view(engine);
+    }
+
+    /// Validate and store a DSL query. Calls `compile` once up front so
+    /// a syntax error surfaces in the status bar before we scan the
+    /// index. Empty query clears the DSL slot.
+    fn set_dsl(&mut self, source: &str, engine: &Engine) {
+        let trimmed = source.trim();
+        if trimmed.is_empty() {
+            self.dsl_query = None;
+            self.rebuild_view(engine);
+            return;
+        }
+        match mgi_pulse_core::engine::dsl::compile(trimmed) {
+            Ok(_) => {
+                self.dsl_query = Some(trimmed.to_string());
+                self.rebuild_view(engine);
+            }
+            Err(e) => {
+                self.status_msg = format!("dsl error: {}", e);
+            }
+        }
     }
 
     /// Get (and cache) the histogram for the timeline pane. Cache key is
@@ -677,6 +720,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             // Status bar.
             let (prompt_label, prompt_buf) = match &app.input {
                 Some(Input::Search(s)) => ("/", s.as_str()),
+                Some(Input::Dsl(s)) => (":", s.as_str()),
                 Some(Input::Filter(s)) => ("f", s.as_str()),
                 Some(Input::JumpTime(s)) => ("t", s.as_str()),
                 None => ("", ""),
@@ -703,6 +747,8 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             if show_tabs {
                 hint_spans.push(Span::styled("f", bright));
                 hint_spans.push(Span::styled(" field=val · ", dim));
+                hint_spans.push(Span::styled(":", bright));
+                hint_spans.push(Span::styled(" query · ", dim));
                 hint_spans.push(Span::styled("t", bright));
                 hint_spans.push(Span::styled(" time · ", dim));
                 hint_spans.push(Span::styled("1-4", bright));
@@ -777,14 +823,26 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                     }
                                 }
                             }
+                            (Input::Dsl(buf), KeyCode::Enter) => {
+                                let raw = buf.clone();
+                                app.input = None;
+                                let engine = &app.engine;
+                                app.views[app.active_tab].set_dsl(&raw, engine);
+                            }
                             (
-                                Input::Search(buf) | Input::Filter(buf) | Input::JumpTime(buf),
+                                Input::Search(buf)
+                                | Input::Filter(buf)
+                                | Input::JumpTime(buf)
+                                | Input::Dsl(buf),
                                 KeyCode::Backspace,
                             ) => {
                                 buf.pop();
                             }
                             (
-                                Input::Search(buf) | Input::Filter(buf) | Input::JumpTime(buf),
+                                Input::Search(buf)
+                                | Input::Filter(buf)
+                                | Input::JumpTime(buf)
+                                | Input::Dsl(buf),
                                 KeyCode::Char(c),
                             ) => {
                                 buf.push(c);
@@ -814,6 +872,9 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                             }
                             (KeyCode::Char('/'), _) => {
                                 app.input = Some(Input::Search(String::new()));
+                            }
+                            (KeyCode::Char(':'), _) => {
+                                app.input = Some(Input::Dsl(String::new()));
                             }
                             (KeyCode::Char('f'), _) => {
                                 app.input = Some(Input::Filter(String::new()));

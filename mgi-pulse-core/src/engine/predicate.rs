@@ -74,6 +74,108 @@ impl Predicate for FieldEqualsPredicate {
     }
 }
 
+/// Field-targeted regex predicate. Reads the named field through the
+/// FieldCache and matches its value against the supplied pattern.
+/// Different from `RegexBytesPredicate` (which matches the whole raw
+/// line) — useful for `msg~/timeout/` style DSL clauses.
+pub struct FieldRegexPredicate {
+    field: String,
+    re: regex::Regex,
+}
+
+impl FieldRegexPredicate {
+    pub fn new(field: String, pattern: &str) -> Result<Self, regex::Error> {
+        let re = regex::Regex::new(pattern)?;
+        Ok(Self { field, re })
+    }
+}
+
+impl Predicate for FieldRegexPredicate {
+    fn matches(&self, _rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        match cache.get(&self.field) {
+            Some(v) => self.re.is_match(v),
+            None => false,
+        }
+    }
+}
+
+/// Negation wrapper. Inverts the inner predicate's verdict. Used by the
+/// DSL's `!=` operator.
+pub struct NotPredicate {
+    inner: Box<dyn Predicate>,
+}
+
+impl NotPredicate {
+    pub fn new(inner: Box<dyn Predicate>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Predicate for NotPredicate {
+    fn matches(&self, rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        !self.inner.matches(rec, cache)
+    }
+}
+
+/// Time-range predicate. Compares a record's `ts_micros` to a fixed
+/// bound. Used by the DSL's `>`, `>=`, `<`, `<=` operators on `ts` and
+/// (when wired) by the timeline-scrub interaction.
+pub struct TimeRangePredicate {
+    bound: i64,
+    cmp: TimeCmp,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TimeCmp {
+    Greater,
+    GreaterEq,
+    Less,
+    LessEq,
+}
+
+impl TimeRangePredicate {
+    pub fn greater_than(bound: i64) -> Self {
+        Self {
+            bound,
+            cmp: TimeCmp::Greater,
+        }
+    }
+    pub fn at_or_after(bound: i64) -> Self {
+        Self {
+            bound,
+            cmp: TimeCmp::GreaterEq,
+        }
+    }
+    pub fn less_than(bound: i64) -> Self {
+        Self {
+            bound,
+            cmp: TimeCmp::Less,
+        }
+    }
+    pub fn at_or_before(bound: i64) -> Self {
+        Self {
+            bound,
+            cmp: TimeCmp::LessEq,
+        }
+    }
+}
+
+impl Predicate for TimeRangePredicate {
+    fn matches(&self, rec: &RawRecord, _cache: &mut FieldCache<'_>) -> bool {
+        // Untimed records (TS_UNTIMED = i64::MIN) never satisfy a
+        // time-range filter — they're outside the time axis by design.
+        if rec.ts_micros == crate::engine::record::TS_UNTIMED {
+            return false;
+        }
+        match self.cmp {
+            TimeCmp::Greater => rec.ts_micros > self.bound,
+            TimeCmp::GreaterEq => rec.ts_micros >= self.bound,
+            TimeCmp::Less => rec.ts_micros < self.bound,
+            TimeCmp::LessEq => rec.ts_micros <= self.bound,
+        }
+    }
+}
+
 /// Severity filter: keep records whose severity is exactly one of the
 /// allowed levels.
 ///
