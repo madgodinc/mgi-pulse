@@ -65,6 +65,34 @@ impl Predicate for FieldEqualsPredicate {
     }
 }
 
+/// Severity filter: keep records whose severity is exactly one of the
+/// allowed levels.
+///
+/// Bit-mask over the severity enum (8 entries fit in a u8 mask). The
+/// "Error" tab uses `{ERROR, FATAL}` so fatal records do show up alongside
+/// errors (the same row would never reach a user as "warn-only" anyway).
+/// Plain `{INFO}` / `{WARN}` keep the tab strictly to one level.
+pub struct SeverityInPredicate {
+    /// Bit `1 << sev` is set for each allowed severity.
+    mask: u8,
+}
+
+impl SeverityInPredicate {
+    pub fn new(levels: &[u8]) -> Self {
+        let mut mask = 0u8;
+        for &lv in levels {
+            mask |= 1 << lv;
+        }
+        Self { mask }
+    }
+}
+
+impl Predicate for SeverityInPredicate {
+    fn matches(&self, rec: &RawRecord, _line_bytes: &[u8]) -> bool {
+        (self.mask >> rec.severity) & 1 == 1
+    }
+}
+
 /// AND-composition of any predicates. Empty composition matches everything;
 /// `f` then `f` again produces a two-element And and only rows passing both
 /// survive.
@@ -169,5 +197,33 @@ mod tests {
         let and = AndPredicate::new();
         let r = fake_rec();
         assert!(and.matches(&r, b"anything"));
+    }
+
+    #[test]
+    fn severity_in_set_membership() {
+        let p = SeverityInPredicate::new(&[severity::ERROR, severity::FATAL]);
+        let mut r = fake_rec();
+        r.severity = severity::ERROR;
+        assert!(p.matches(&r, b""));
+        r.severity = severity::FATAL;
+        assert!(p.matches(&r, b""));
+        r.severity = severity::WARN;
+        assert!(!p.matches(&r, b""));
+        r.severity = severity::INFO;
+        assert!(!p.matches(&r, b""));
+        r.severity = severity::TRACE;
+        assert!(!p.matches(&r, b""));
+    }
+
+    #[test]
+    fn severity_in_single_level() {
+        let p = SeverityInPredicate::new(&[severity::WARN]);
+        let mut r = fake_rec();
+        r.severity = severity::WARN;
+        assert!(p.matches(&r, b""));
+        r.severity = severity::ERROR;
+        assert!(!p.matches(&r, b""));
+        r.severity = severity::INFO;
+        assert!(!p.matches(&r, b""));
     }
 }

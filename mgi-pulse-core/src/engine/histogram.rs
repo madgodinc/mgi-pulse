@@ -67,24 +67,31 @@ pub struct Histogram {
 }
 
 impl Histogram {
-    /// Build a histogram over the engine's time index with exactly `bins`
-    /// bins. If the input is empty or has no timed records, returns an empty
-    /// histogram (bins.len() == 0); the renderer should fall back to a hint
-    /// row.
+    /// Build a histogram over every indexed record. Convenience for callers
+    /// without a filtered view.
     pub fn build(engine: &Engine, bins: usize) -> Self {
-        if bins == 0 {
+        let view: Vec<u64> = (0..engine.indexes.len() as u64).collect();
+        Self::build_over(engine, &view, bins)
+    }
+
+    /// Build a histogram over a specific filtered view (a sorted list of
+    /// surviving line_ids). This is what the UI calls — the cached version
+    /// in App reuses the result until the view or width changes.
+    pub fn build_over(engine: &Engine, view: &[u64], bins: usize) -> Self {
+        if bins == 0 || view.is_empty() {
             return Self::default();
         }
-        let ts = &engine.indexes.time.ts;
+        let ts_index = &engine.indexes.time.ts;
         let sevs = &engine.indexes.severity.levels;
-        if ts.is_empty() {
-            return Self::default();
-        }
 
         let mut t_min = i64::MAX;
         let mut t_max = i64::MIN;
         let mut untimed: u64 = 0;
-        for &t in ts {
+        for &line_id in view {
+            let t = match ts_index.get(line_id as usize) {
+                Some(&t) => t,
+                None => continue,
+            };
             if t == TS_UNTIMED {
                 untimed += 1;
                 continue;
@@ -93,7 +100,6 @@ impl Histogram {
             if t > t_max { t_max = t; }
         }
         if t_min == i64::MAX {
-            // Everything was untimed.
             return Self {
                 bins: Vec::new(),
                 t_min: 0,
@@ -101,8 +107,6 @@ impl Histogram {
                 untimed,
             };
         }
-        // Half-open [t_min, t_max + 1) so the last record actually lands in
-        // the last bin instead of overflowing.
         let upper = t_max.saturating_add(1);
         let span = (upper - t_min).max(1);
         let mut out = Self {
@@ -111,15 +115,18 @@ impl Histogram {
             t_max: upper,
             untimed,
         };
-        // Walk both arrays in lockstep. They're parallel by construction.
-        for (i, &t) in ts.iter().enumerate() {
+        for &line_id in view {
+            let idx = line_id as usize;
+            let t = match ts_index.get(idx) {
+                Some(&t) => t,
+                None => continue,
+            };
             if t == TS_UNTIMED {
                 continue;
             }
-            // floor((t - t_min) * bins / span), clamped to [0, bins-1].
             let pos = (((t - t_min) as i128 * bins as i128) / span as i128) as usize;
             let pos = pos.min(bins - 1);
-            let sev = sevs.get(i).copied().unwrap_or(severity::UNKNOWN);
+            let sev = sevs.get(idx).copied().unwrap_or(severity::UNKNOWN);
             out.bins[pos].add(sev);
         }
         out

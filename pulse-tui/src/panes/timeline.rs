@@ -7,7 +7,6 @@
 
 use mgi_pulse_core::engine::histogram::Histogram;
 use mgi_pulse_core::engine::record::severity;
-use mgi_pulse_core::engine::Engine;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -54,7 +53,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-pub fn render(f: &mut Frame, area: Rect, engine: &Engine) {
+/// Render the cached histogram. The caller (App) owns the cache so this pane
+/// stays free of work on every redraw.
+pub fn render(f: &mut Frame, area: Rect, h: &Histogram) {
     let block = Block::default()
         .title(" timeline ")
         .borders(Borders::ALL);
@@ -64,9 +65,6 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine) {
     if inner.width < 4 || inner.height < 2 {
         return;
     }
-
-    let bar_count = inner.width as usize;
-    let h = Histogram::build(engine, bar_count);
 
     if h.bins.is_empty() {
         let msg = if h.untimed > 0 {
@@ -85,7 +83,7 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine) {
     let peak = h.peak().max(1);
     let bar_steps = (BAR_CHARS.len() - 1) as u64;
 
-    let mut bar_line_spans: Vec<Span> = Vec::with_capacity(bar_count);
+    let mut bar_line_spans: Vec<Span> = Vec::with_capacity(h.bins.len());
     for bin in &h.bins {
         let frac = (bin.count * bar_steps) / peak;
         let ch = BAR_CHARS[frac.min(bar_steps) as usize];
