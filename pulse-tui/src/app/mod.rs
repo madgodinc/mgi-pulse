@@ -111,7 +111,14 @@ pub struct View {
     pub severity_label: String,
     pub detail_open: bool,
     pub status_msg: String,
-    pub histogram_cache: Option<(usize, u16, Histogram)>,
+    /// Cached histogram, keyed by (view generation, terminal width).
+    /// Length-based keying was a bug: two different predicate sets that
+    /// happen to keep the same number of records would yield a false cache
+    /// hit and render the stale histogram. `generation` is bumped on every
+    /// `rebuild_view`, so any filter change invalidates the cache.
+    pub histogram_cache: Option<(u64, u16, Histogram)>,
+    /// Monotonically incremented every time the filter set changes.
+    pub generation: u64,
 }
 
 impl View {
@@ -142,6 +149,7 @@ impl View {
             detail_open: false,
             status_msg,
             histogram_cache: None,
+            generation: 0,
         }
     }
 
@@ -285,6 +293,7 @@ impl View {
             self.scroll_top = snapped;
         }
         self.histogram_cache = None;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     fn set_severity(&mut self, label: &str, levels: &[u8], engine: &Engine) {
@@ -337,16 +346,18 @@ impl View {
         self.rebuild_view(engine);
     }
 
-    /// Get (and cache) the histogram for the timeline pane.
+    /// Get (and cache) the histogram for the timeline pane. Cache key is
+    /// (generation, bars); see the field comment for why length is not part
+    /// of the key.
     fn histogram(&mut self, engine: &Engine, bars: u16) -> &Histogram {
-        let view_len = self.filtered_view.len();
+        let gen = self.generation;
         let needs_build = match &self.histogram_cache {
-            Some((cached_len, cached_w, _)) => *cached_len != view_len || *cached_w != bars,
+            Some((cached_gen, cached_w, _)) => *cached_gen != gen || *cached_w != bars,
             None => true,
         };
         if needs_build {
             let h = Histogram::build_over(engine, &self.filtered_view, bars as usize);
-            self.histogram_cache = Some((view_len, bars, h));
+            self.histogram_cache = Some((gen, bars, h));
         }
         &self.histogram_cache.as_ref().unwrap().2
     }
@@ -445,23 +456,27 @@ impl App {
     }
 }
 
-pub fn run(mut app: App) -> Result<()> {
+pub fn run(mut app: App, mouse_capture: bool) -> Result<()> {
     let mut stdout = io::stdout();
     crossterm::terminal::enable_raw_mode()?;
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-    )?;
+    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    if mouse_capture {
+        crossterm::execute!(stdout, crossterm::event::EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_loop(&mut terminal, &mut app);
 
     let _ = crossterm::terminal::disable_raw_mode();
+    if mouse_capture {
+        let _ = crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::event::DisableMouseCapture,
+        );
+    }
     let _ = crossterm::execute!(
         terminal.backend_mut(),
-        crossterm::event::DisableMouseCapture,
         crossterm::terminal::LeaveAlternateScreen
     );
     let _ = terminal.show_cursor();

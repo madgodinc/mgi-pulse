@@ -32,8 +32,17 @@ struct Cli {
     #[arg(value_name = "FILE")]
     files: Vec<PathBuf>,
 
-    /// Enable mouse capture (opt-in, breaks terminal text selection).
+    /// Disable mouse capture. By default mouse capture is on so wheel
+    /// scrolls the table and clicks switch tabs; use Shift+drag for
+    /// terminal selection while capture is active. Pass `--no-mouse` if
+    /// you need the unmodified terminal selection back (useful over SSH
+    /// or when copying via mouse without modifier).
     #[arg(long, default_value_t = false)]
+    no_mouse: bool,
+
+    /// Deprecated legacy flag. Mouse is on by default now; pass
+    /// `--no-mouse` to disable.
+    #[arg(long, default_value_t = false, hide = true)]
     mouse: bool,
 
     /// Index the input, print a summary, and exit without entering the TUI.
@@ -139,7 +148,7 @@ fn run() -> Result<()> {
     }
 
     let app = app::App::new(engine, source_label);
-    app::run(app)
+    app::run(app, !cli.no_mouse)
 }
 
 fn ingest_file(path: &PathBuf, engine: &mut Engine) -> Result<()> {

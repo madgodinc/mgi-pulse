@@ -23,6 +23,10 @@ use ratatui::Frame;
 
 const CONTEXT_BEFORE: u64 = 5;
 const CONTEXT_AFTER: u64 = 5;
+/// Hard cap on bytes we'll try to pretty-print or scan as context. Anything
+/// past this is truncated with a `… +Nk more` marker — a 200 MB serialized
+/// payload on a single line would otherwise wedge the renderer.
+const MAX_DETAIL_BYTES: usize = 256 * 1024;
 
 pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
     let block = Block::default()
@@ -31,10 +35,18 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let bytes = engine.line_bytes(line_id);
+    let bytes_full = engine.line_bytes(line_id);
+    let truncated = bytes_full.len() > MAX_DETAIL_BYTES;
+    let bytes = if truncated {
+        &bytes_full[..MAX_DETAIL_BYTES]
+    } else {
+        bytes_full
+    };
 
     // JSON path: pretty-print the focused record. Fall through to the
-    // context view if parsing fails.
+    // context view if parsing fails. Truncated input is unlikely to parse
+    // as JSON; we still try, but mostly this hits the plain-text path.
+    if !truncated {
     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
         if let Ok(pretty) = serde_json::to_string_pretty(&v) {
             let lines: Vec<Line> = pretty
@@ -51,6 +63,7 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
             return;
         }
     }
+    }
 
     // Plain-text path: show context around the focused line so multi-line
     // records (Java stack traces, exception continuations) read as one
@@ -61,7 +74,12 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
 
     let mut lines: Vec<Line> = Vec::with_capacity((to - from) as usize);
     for lid in from..to {
-        let raw = engine.line_bytes(lid);
+        let raw_full = engine.line_bytes(lid);
+        let raw = if raw_full.len() > MAX_DETAIL_BYTES {
+            &raw_full[..MAX_DETAIL_BYTES]
+        } else {
+            raw_full
+        };
         let text = String::from_utf8_lossy(raw);
         let style = if lid == line_id {
             Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
@@ -69,9 +87,15 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
             Style::default().fg(Color::DarkGray)
         };
         let marker = if lid == line_id { "▶ " } else { "  " };
+        let suffix = if raw_full.len() > MAX_DETAIL_BYTES {
+            format!(" … +{}k more", (raw_full.len() - MAX_DETAIL_BYTES) / 1024)
+        } else {
+            String::new()
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("{}{:>6}  ", marker, lid), Style::default().fg(Color::DarkGray)),
             Span::styled(text.to_string(), style),
+            Span::styled(suffix, Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)),
         ]));
     }
 

@@ -18,6 +18,7 @@ pub mod parse;
 pub mod predicate;
 pub mod query;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use memmap2::Mmap;
@@ -34,11 +35,12 @@ pub struct Engine {
     /// don't need an entry — their bytes are owned. We still keep an entry
     /// (a zero-length Arc) per source to keep the index dense.
     pub mmaps: Vec<Arc<Mmap>>,
-    /// For stream sources, the owned bytes per record are not stored in the
-    /// engine — they would double the memory cost. The indexer keeps them
-    /// alive in `owned_lines[line_id]` only for stream sources. File sources
-    /// leave a `None` here and resolve through `mmaps`.
-    pub owned_lines: Vec<Option<Box<[u8]>>>,
+    /// For stream sources, the owned bytes per record are stored sparsely —
+    /// only stream records take space. Previously this was a parallel
+    /// `Vec<Option<Box<[u8]>>>`, which spent ~16 B per file record on empty
+    /// `None` slots (a fat pointer + Option discriminant, ~176 MB on the
+    /// 11M-record fixture). The HashMap is empty for pure-file pipelines.
+    pub owned_lines: HashMap<u64, Box<[u8]>>,
     /// Frozen-after-warmup schema. None until `scan_schema` runs.
     pub schema: Option<LockedSchema>,
 }
@@ -48,7 +50,7 @@ impl Engine {
         Self {
             indexes: Indexes::default(),
             mmaps: Vec::new(),
-            owned_lines: Vec::new(),
+            owned_lines: HashMap::new(),
             schema: None,
         }
     }
@@ -61,7 +63,7 @@ impl Engine {
             Some(l) => l,
             None => return &[],
         };
-        if let Some(Some(b)) = self.owned_lines.get(line_id as usize) {
+        if let Some(b) = self.owned_lines.get(&line_id) {
             return b;
         }
         let mmap = match self.mmaps.get(loc.source_id as usize) {
@@ -89,23 +91,36 @@ impl Engine {
         self.schema = Some(sb.lock());
     }
 
-    /// True if at least one record carried a parsed timestamp. False on
-    /// plain-text inputs (Clojure log4j defaults, raw stdout, etc.) where
-    /// every record is in the untimed bucket — the timeline pane should
-    /// hide itself in that case.
+    /// True when more than half the records carry a parsed timestamp. We
+    /// use a majority threshold (not "at least one") so a single
+    /// accidentally-timestamp-shaped line in a plain-text log doesn't
+    /// flip the whole UI into structured mode and render a useless
+    /// single-bar histogram. Mirror logic in less-mode rules.
     pub fn has_timestamps(&self) -> bool {
-        self.indexes.parse_stats.untimed < self.indexes.len() as u64
+        let total = self.indexes.len() as u64;
+        if total == 0 {
+            return false;
+        }
+        let timed = total - self.indexes.parse_stats.untimed;
+        timed * 2 > total
     }
 
-    /// True if at least one record had a recognizable severity field.
-    /// False on plain-text inputs where every record is UNKNOWN — the
-    /// severity tabs should collapse to just `All` in that case.
+    /// True when more than half the records carry a recognizable severity
+    /// level. Same majority logic as `has_timestamps` — a stray ERROR-shaped
+    /// word in plain text shouldn't unlock severity tabs.
     pub fn has_severity(&self) -> bool {
-        self.indexes
+        let total = self.indexes.len();
+        if total == 0 {
+            return false;
+        }
+        let known = self
+            .indexes
             .severity
             .levels
             .iter()
-            .any(|s| *s != crate::engine::record::severity::UNKNOWN)
+            .filter(|s| **s != crate::engine::record::severity::UNKNOWN)
+            .count();
+        known * 2 > total
     }
 
     /// True if schema warmup found at least one structured field. False on

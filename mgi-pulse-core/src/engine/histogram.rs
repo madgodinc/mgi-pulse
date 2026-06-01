@@ -151,7 +151,7 @@ mod tests {
             e.indexes.line.locs.push(LineLoc { source_id: 0, offset: 0, len: 0 });
             e.indexes.time.ts.push(t);
             e.indexes.severity.levels.push(sev);
-            e.owned_lines.push(None);
+            // owned_lines is now sparse — file-style fixtures leave it empty.
         }
         e
     }

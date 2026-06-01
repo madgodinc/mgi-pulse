@@ -45,23 +45,25 @@ pub fn drain<P: crate::io::RecordProducer>(
     engine: &mut crate::engine::Engine,
 ) {
     while let Some(rec) = producer.next() {
-        let (loc, owned): (LineLoc, Option<Box<[u8]>>) = match rec.bytes {
-            RecordBytes::FileRef { source_id, offset, len } => (
-                LineLoc { source_id, offset, len },
-                None,
-            ),
-            RecordBytes::Owned(boxed) => (
-                LineLoc {
+        match rec.bytes {
+            RecordBytes::FileRef { source_id, offset, len } => {
+                engine
+                    .indexes
+                    .line
+                    .locs
+                    .push(LineLoc { source_id, offset, len });
+            }
+            RecordBytes::Owned(boxed) => {
+                let line_id = engine.indexes.line.locs.len() as u64;
+                engine.indexes.line.locs.push(LineLoc {
                     source_id: rec.source_id,
                     offset: 0,
                     len: boxed.len() as u32,
-                },
-                Some(boxed),
-            ),
-        };
-        engine.indexes.line.locs.push(loc);
+                });
+                engine.owned_lines.insert(line_id, boxed);
+            }
+        }
         engine.indexes.time.ts.push(rec.ts_micros);
         engine.indexes.severity.levels.push(rec.severity);
-        engine.owned_lines.push(owned);
     }
 }
