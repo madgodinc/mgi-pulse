@@ -23,6 +23,7 @@ use std::sync::Arc;
 use memmap2::Mmap;
 
 use crate::engine::indexer::Indexes;
+use crate::schema::{LockedSchema, SchemaBuilder, FILE_WARMUP_LINES};
 
 /// Owns the indexed data plus the mmap snapshots needed to resolve bytes by
 /// `line_id`. Single-source today; the dense `mmaps` vector is keyed by
@@ -38,6 +39,8 @@ pub struct Engine {
     /// alive in `owned_lines[line_id]` only for stream sources. File sources
     /// leave a `None` here and resolve through `mmaps`.
     pub owned_lines: Vec<Option<Box<[u8]>>>,
+    /// Frozen-after-warmup schema. None until `scan_schema` runs.
+    pub schema: Option<LockedSchema>,
 }
 
 impl Engine {
@@ -46,6 +49,7 @@ impl Engine {
             indexes: Indexes::default(),
             mmaps: Vec::new(),
             owned_lines: Vec::new(),
+            schema: None,
         }
     }
 
@@ -70,6 +74,19 @@ impl Engine {
             return &[];
         }
         &mmap[start..end]
+    }
+
+    /// Build the locked schema by scanning the first `min(FILE_WARMUP_LINES,
+    /// indexed)` records. Call once after `indexer::drain` is done.
+    pub fn scan_schema(&mut self) {
+        let total = self.indexes.len() as u64;
+        let window = (total.min(FILE_WARMUP_LINES as u64)) as u64;
+        let mut sb = SchemaBuilder::new();
+        for line_id in 0..window {
+            let bytes = self.line_bytes(line_id);
+            sb.scan(bytes);
+        }
+        self.schema = Some(sb.lock());
     }
 }
 

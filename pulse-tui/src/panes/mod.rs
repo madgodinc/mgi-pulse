@@ -9,4 +9,5 @@
 //! Mouse is opt-in via `--mouse`. Keyboard is primary: terminal text selection
 //! must not be broken in the default mode.
 
+pub mod detail;
 pub mod table;

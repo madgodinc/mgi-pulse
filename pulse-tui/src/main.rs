@@ -108,6 +108,11 @@ fn run() -> Result<()> {
         }
     }
 
+    // Schema warmup: scan the first 10k records to derive auto-columns. This
+    // is opportunistic — non-JSON or schema-poor inputs simply produce fewer
+    // columns and we fall back to the raw payload.
+    engine.scan_schema();
+
     if cli.dry_run {
         let idx = &engine.indexes;
         let ps = idx.parse_stats;
@@ -118,6 +123,17 @@ fn run() -> Result<()> {
             ps.untimed - ps.ts_parse_errors,
             ps.ts_parse_errors,
             ps.json_parse_errors
+        );
+        let cols: Vec<String> = engine
+            .schema
+            .as_ref()
+            .map(|s| s.auto_columns(8).iter().map(|c| c.to_string()).collect())
+            .unwrap_or_default();
+        println!(
+            "schema: {} fields scanned ({} records in warmup), auto-columns: {:?}",
+            engine.schema.as_ref().map(|s| s.ordered_fields.len()).unwrap_or(0),
+            engine.schema.as_ref().map(|s| s.records_scanned).unwrap_or(0),
+            cols
         );
         return Ok(());
     }

@@ -9,6 +9,7 @@
 
 use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
 use mgi_pulse_core::engine::Engine;
+use mgi_pulse_core::schema::{project_field, unquote_if_string};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -18,6 +19,9 @@ use ratatui::Frame;
 const COL_LINE_W: usize = 9;
 const COL_TS_W: usize = 24;
 const COL_LV_W: usize = 6;
+/// Default width for each auto-column. Real adaptive sizing is backlog;
+/// this picks a comfortable default for level/logger/msg shapes.
+const COL_FIELD_W: usize = 18;
 
 /// Locate the index inside `filtered_view` at or after `cursor`. Returns
 /// `filtered_view.len()` if every survivor is below `cursor`.
@@ -111,23 +115,64 @@ pub fn render(
         return;
     }
 
-    let start = lower_bound(filtered_view, scroll_top);
-    let visible = inner.height as usize;
-    let mut lines: Vec<Line> = Vec::with_capacity(visible);
-
-    let raw_w = inner
-        .width
-        .saturating_sub((COL_LINE_W + 1 + COL_TS_W + 1 + COL_LV_W + 1) as u16)
+    // Auto-columns from the locked schema. The visible width is split:
+    //   line | ts | level | <auto-columns> | <raw remainder>
+    // We cap auto-columns by how many fit at COL_FIELD_W each.
+    let fixed_w = (COL_LINE_W + 1 + COL_TS_W + 1 + COL_LV_W + 1) as u16;
+    let inner_w = inner.width.saturating_sub(fixed_w);
+    let max_auto = (inner_w / (COL_FIELD_W as u16 + 1)) as usize;
+    let auto_cols = engine
+        .schema
+        .as_ref()
+        .map(|s| s.auto_columns(max_auto.saturating_sub(1).max(0)))
+        .unwrap_or_default();
+    let raw_w = inner_w
+        .saturating_sub((auto_cols.len() * (COL_FIELD_W + 1)) as u16)
         as usize;
 
-    for i in start..start.saturating_add(visible).min(filtered_view.len()) {
+    let start = lower_bound(filtered_view, scroll_top);
+    let visible = inner.height as usize;
+    let mut lines: Vec<Line> = Vec::with_capacity(visible.saturating_add(1));
+
+    // Header row.
+    let mut header_spans = vec![
+        Span::styled(
+            format!("{:>1$}", "line", COL_LINE_W),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<1$}", "timestamp", COL_TS_W),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("{:<1$}", "level", COL_LV_W),
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ];
+    for col in &auto_cols {
+        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::styled(
+            truncate_padded(col.as_str(), COL_FIELD_W),
+            Style::default().add_modifier(Modifier::DIM | Modifier::BOLD),
+        ));
+    }
+    if raw_w > 0 {
+        header_spans.push(Span::raw(" "));
+        header_spans.push(Span::styled(
+            truncate_padded("raw", raw_w),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    lines.push(Line::from(header_spans));
+
+    let body_visible = visible.saturating_sub(1);
+    for i in start..start.saturating_add(body_visible).min(filtered_view.len()) {
         let line_id = filtered_view[i];
         let sev = engine.indexes.severity.get(line_id).unwrap_or(0);
         let ts = engine.indexes.time.get(line_id).unwrap_or(TS_UNTIMED);
         let bytes = engine.line_bytes(line_id);
-        // Lossy UTF-8 only at the render boundary. Non-UTF-8 logs are real.
-        let raw = String::from_utf8_lossy(bytes);
-        let raw = if raw.len() > raw_w { &raw[..raw_w] } else { &raw[..] };
 
         let row_style = if line_id == cursor {
             Style::default()
@@ -137,7 +182,7 @@ pub fn render(
             Style::default()
         };
 
-        let spans = vec![
+        let mut spans = vec![
             Span::styled(
                 format!("{:>1$}", line_id, COL_LINE_W),
                 Style::default().fg(Color::DarkGray),
@@ -149,14 +194,45 @@ pub fn render(
                 format!("{:<1$}", severity::name(sev), COL_LV_W),
                 severity_style(sev).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" "),
-            Span::raw(raw.to_string()),
         ];
+        for col in &auto_cols {
+            spans.push(Span::raw(" "));
+            let value = project_field(bytes, col.as_str())
+                .map(unquote_if_string)
+                .unwrap_or("");
+            spans.push(Span::raw(truncate_padded(value, COL_FIELD_W)));
+        }
+        if raw_w > 0 {
+            let raw = String::from_utf8_lossy(bytes);
+            let raw_trunc = if raw.len() > raw_w { &raw[..raw_w] } else { &raw[..] };
+            spans.push(Span::raw(" "));
+            spans.push(Span::raw(raw_trunc.to_string()));
+        }
         lines.push(Line::from(spans).style(row_style));
     }
 
     let p = Paragraph::new(lines);
     f.render_widget(p, inner);
+}
+
+/// Truncate or right-pad a string to exactly `width` columns. Inputs are
+/// assumed to be ASCII / single-width; multi-byte handling is M3 polish.
+fn truncate_padded(s: &str, width: usize) -> String {
+    if s.len() >= width {
+        // Truncate on a char boundary to avoid panicking on multi-byte input.
+        let mut end = width;
+        while !s.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        s[..end].to_string()
+    } else {
+        let mut out = String::with_capacity(width);
+        out.push_str(s);
+        for _ in s.len()..width {
+            out.push(' ');
+        }
+        out
+    }
 }
 
 #[cfg(test)]

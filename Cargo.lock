@@ -527,6 +527,7 @@ dependencies = [
  "crossterm",
  "mgi-pulse-core",
  "ratatui",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]
