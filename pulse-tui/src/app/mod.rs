@@ -614,7 +614,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             }
             constraints.push(Constraint::Length(1));
             if show_timeline {
-                constraints.push(Constraint::Length(4));
+                constraints.push(Constraint::Length(6));
             }
             constraints.push(Constraint::Min(3));
             constraints.push(Constraint::Length(2));
