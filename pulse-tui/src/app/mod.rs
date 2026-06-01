@@ -57,8 +57,17 @@ impl App {
     pub fn new(engine: Engine, source_label: String) -> Self {
         let total = engine.indexes.len() as u64;
         let filtered_view = (0..total).collect();
+        let ps = engine.indexes.parse_stats;
         let status_msg = if total == 0 {
             "no records loaded".to_string()
+        } else if ps.untimed > 0 {
+            format!(
+                "{} records loaded · {} untimed (ts missing/bad: {}/{})",
+                total,
+                ps.untimed,
+                ps.untimed - ps.ts_parse_errors,
+                ps.ts_parse_errors
+            )
         } else {
             format!("{} records loaded", total)
         };
