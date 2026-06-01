@@ -69,8 +69,8 @@ struct Cli {
     columns: Option<usize>,
 
     /// Force a specific log format instead of auto-detect. Valid values:
-    /// `ndjson`, `logfmt`. When omitted, the first ~200 lines of the
-    /// input are sampled to guess.
+    /// `ndjson`, `logfmt`, `edn`. When omitted, the first ~200 lines of
+    /// the input are sampled to guess.
     #[arg(long, value_name = "FORMAT")]
     format: Option<String>,
 
@@ -129,7 +129,11 @@ fn run() -> Result<()> {
         None => None,
         Some("ndjson") => Some(LogFormat::Ndjson),
         Some("logfmt") => Some(LogFormat::Logfmt),
-        Some(other) => anyhow::bail!("unknown --format value '{}'; valid: ndjson, logfmt", other),
+        Some("edn") => Some(LogFormat::Edn),
+        Some(other) => anyhow::bail!(
+            "unknown --format value '{}'; valid: ndjson, logfmt, edn",
+            other
+        ),
     };
 
     // Build the override field-names from CLI flags. Defaults to None so

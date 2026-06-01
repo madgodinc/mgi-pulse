@@ -42,6 +42,7 @@ mgi-pulse anything.log              # plain text works too — see "less-mode"
 mgi-pulse app.log.gz                # gzip auto-detected by magic bytes
 mgi-pulse app.log.zst               # zstd too
 mgi-pulse --format=logfmt go.log    # Go / Heroku-style key=value pairs
+mgi-pulse --format=edn clojure.edn  # Clojure {:key value} maps
 ```
 
 Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `f`
@@ -142,13 +143,9 @@ away.
   `tail -F file | mgi-pulse -`.
 - **Timeline scrubbing or zoom.** The histogram is a static overview; you can't
   yet click or scroll along the time axis to jump.
-- **Other log formats.** NDJSON and logfmt today (auto-detect by content;
-  override with `--format=logfmt`). Plain text with regex extraction,
-  CEE/syslog, Apache/nginx access logs — not yet.
-- **EDN logs (Clojure).** EDN looks JSON-shaped to the eye (`{:ts "..."
-  :level :error :msg "..."}`) but is not JSON, so `mgi-pulse` currently
-  drops to less-mode on EDN streams. Planned for v0.2 — tracked in
-  [#1](https://github.com/madgodinc/mgi-pulse/issues/1).
+- **Other log formats.** NDJSON, logfmt, and EDN today (auto-detect by
+  content; override with `--format=ndjson|logfmt|edn`). Plain text with
+  regex extraction, CEE/syslog, Apache/nginx access logs — not yet.
 - **Stack-trace folding.** Multi-line Go / Rust / Java tracebacks are not
   collapsed into one row.
 - **Themes.** Colours are fixed (severity-coded).

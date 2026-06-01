@@ -16,6 +16,7 @@ pub mod histogram;
 pub mod indexer;
 pub mod indexes;
 pub mod parse;
+pub mod parse_edn;
 pub mod parse_logfmt;
 pub mod predicate;
 pub mod query;

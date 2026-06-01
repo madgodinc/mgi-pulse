@@ -24,6 +24,10 @@ pub enum LogFormat {
     /// <https://brandur.org/logfmt>. Common in Go ecosystems via
     /// `kr/logfmt` and Heroku Logplex.
     Logfmt,
+    /// Clojure EDN-style `{:k v :k v}` maps. Reference:
+    /// <https://github.com/edn-format/edn>. Common in Clojure logging
+    /// through `mulog`, `clojure.tools.logging` with EDN appenders, etc.
+    Edn,
 }
 
 impl LogFormat {
@@ -43,6 +47,7 @@ impl LogFormat {
                 None => ts_and_level(line, stats),
             },
             LogFormat::Logfmt => crate::engine::parse_logfmt::ts_and_level(line, stats, fields),
+            LogFormat::Edn => crate::engine::parse_edn::ts_and_level(line, stats, fields),
         }
     }
 
@@ -60,6 +65,9 @@ impl LogFormat {
             LogFormat::Logfmt => {
                 crate::engine::parse_logfmt::project_field(line, key).map(std::borrow::Cow::Owned)
             }
+            LogFormat::Edn => {
+                crate::engine::parse_edn::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
         }
     }
 
@@ -71,6 +79,7 @@ impl LogFormat {
         match self {
             LogFormat::Ndjson => false,
             LogFormat::Logfmt => false,
+            LogFormat::Edn => false,
         }
     }
 
@@ -80,8 +89,9 @@ impl LogFormat {
     /// override without touching the predicate machinery.
     pub fn severity_from_level(self, level: &str) -> u8 {
         match self {
-            LogFormat::Ndjson => severity::from_bytes(level.as_bytes()),
-            LogFormat::Logfmt => severity::from_bytes(level.as_bytes()),
+            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn => {
+                severity::from_bytes(level.as_bytes())
+            }
         }
     }
 
@@ -90,8 +100,7 @@ impl LogFormat {
     /// parser.
     pub fn parse_timestamp(self, s: &str) -> Option<i64> {
         match self {
-            LogFormat::Ndjson => parse_rfc3339_micros(s),
-            LogFormat::Logfmt => parse_rfc3339_micros(s),
+            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn => parse_rfc3339_micros(s),
         }
     }
 
@@ -107,23 +116,29 @@ impl LogFormat {
     pub fn detect(first_lines: &[&[u8]]) -> LogFormat {
         let mut ndjson_votes = 0;
         let mut logfmt_votes = 0;
+        let mut edn_votes = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
                 continue;
             }
             if trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}') {
+                // EDN signature: first non-whitespace inside the braces is
+                // `:` (keyword key) or `#` (tagged). JSON uses `"` for keys.
+                if edn_signature(trimmed) {
+                    edn_votes += 1;
+                    continue;
+                }
                 ndjson_votes += 1;
                 continue;
             }
-            // Logfmt signature: at least two `key=value` pairs with
-            // alphanumeric keys. Cheap detection — full parse is too
-            // expensive for a sample of 100 lines.
             if logfmt_signature(trimmed) {
                 logfmt_votes += 1;
             }
         }
-        if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
+        if edn_votes > ndjson_votes && edn_votes > logfmt_votes && edn_votes >= 2 {
+            LogFormat::Edn
+        } else if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
             LogFormat::Logfmt
         } else {
             LogFormat::Ndjson
@@ -141,6 +156,21 @@ fn trim_ascii(line: &[u8]) -> &[u8] {
         end -= 1;
     }
     &line[start..end]
+}
+
+/// True when `line` looks like EDN: starts with `{`, the first
+/// non-whitespace inside the braces is a keyword `:` or tag `#`.
+fn edn_signature(line: &[u8]) -> bool {
+    if line.first() != Some(&b'{') {
+        return false;
+    }
+    for &b in &line[1..] {
+        if b == b' ' || b == b'\t' {
+            continue;
+        }
+        return b == b':' || b == b'#';
+    }
+    false
 }
 
 /// True when `line` looks like logfmt: at least two `key=value` pairs

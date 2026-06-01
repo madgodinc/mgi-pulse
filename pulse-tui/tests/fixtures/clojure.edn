@@ -1,0 +1,4 @@
+{:ts "2026-06-01T12:00:00Z" :level :info :logger "app" :msg "server started"}
+{:ts "2026-06-01T12:00:01Z" :level :warn :logger "db" :msg "slow query"}
+{:ts #inst "2026-06-01T12:00:02Z" :level :error :logger "app" :msg "boom"}
+{:event/type :http/request :ts "2026-06-01T12:00:03Z" :level :info :path "/api"}

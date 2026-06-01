@@ -154,6 +154,34 @@ fn logfmt_without_flag_falls_into_less_mode() {
 }
 
 #[test]
+fn edn_input_with_force_flag_parses_clojure_records() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg("--format=edn")
+        .arg(fixture("clojure.edn"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 4 records"))
+        .stdout(contains("untimed: 0"))
+        .stdout(contains("json errors: 0"));
+}
+
+#[test]
+fn edn_without_flag_falls_into_less_mode() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(fixture("clojure.edn"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 4 records"))
+        // Without --format=edn the parser treats every line as JSON
+        // and bails on the keyword sigil immediately.
+        .stdout(contains("json errors: 4"));
+}
+
+#[test]
 fn gzip_file_is_decompressed_transparently() {
     use std::io::Write;
     // Build a temp .gz on the fly so the test doesn't depend on shipping
