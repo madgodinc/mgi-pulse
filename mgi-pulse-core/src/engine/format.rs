@@ -28,6 +28,10 @@ pub enum LogFormat {
     /// <https://github.com/edn-format/edn>. Common in Clojure logging
     /// through `mulog`, `clojure.tools.logging` with EDN appenders, etc.
     Edn,
+    /// Python `logging.basicConfig()` default format:
+    /// `2026-06-01 12:00:00,123 - logger - LEVEL - message`. Reference:
+    /// <https://docs.python.org/3/library/logging.html#logrecord-attributes>.
+    Python,
 }
 
 impl LogFormat {
@@ -48,6 +52,7 @@ impl LogFormat {
             },
             LogFormat::Logfmt => crate::engine::parse_logfmt::ts_and_level(line, stats, fields),
             LogFormat::Edn => crate::engine::parse_edn::ts_and_level(line, stats, fields),
+            LogFormat::Python => crate::engine::parse_python::ts_and_level(line, stats, fields),
         }
     }
 
@@ -68,6 +73,9 @@ impl LogFormat {
             LogFormat::Edn => {
                 crate::engine::parse_edn::project_field(line, key).map(std::borrow::Cow::Owned)
             }
+            LogFormat::Python => {
+                crate::engine::parse_python::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
         }
     }
 
@@ -87,6 +95,11 @@ impl LogFormat {
             LogFormat::Logfmt | LogFormat::Edn => {
                 matches!(line.first(), Some(&b' ') | Some(&b'\t'))
             }
+            // Python's heuristic is broader: any line that doesn't start
+            // with a digit can't open a new `YYYY-MM-DD` timestamp, so
+            // `Traceback (...)` and `ValueError: bad` count as
+            // continuations of the previous record.
+            LogFormat::Python => crate::engine::parse_python::is_continuation(line),
         }
     }
 
@@ -96,7 +109,7 @@ impl LogFormat {
     /// override without touching the predicate machinery.
     pub fn severity_from_level(self, level: &str) -> u8 {
         match self {
-            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn => {
+            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn | LogFormat::Python => {
                 severity::from_bytes(level.as_bytes())
             }
         }
@@ -107,7 +120,9 @@ impl LogFormat {
     /// parser.
     pub fn parse_timestamp(self, s: &str) -> Option<i64> {
         match self {
-            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn => parse_rfc3339_micros(s),
+            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn | LogFormat::Python => {
+                parse_rfc3339_micros(s)
+            }
         }
     }
 

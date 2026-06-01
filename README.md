@@ -43,6 +43,7 @@ mgi-pulse app.log.gz                # gzip auto-detected by magic bytes
 mgi-pulse app.log.zst               # zstd too
 mgi-pulse --format=logfmt go.log    # Go / Heroku-style key=value pairs
 mgi-pulse --format=edn clojure.edn  # Clojure {:key value} maps
+mgi-pulse --format=python app.log   # Python logging default format
 ```
 
 Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `f`
@@ -143,8 +144,9 @@ away.
   `tail -F file | mgi-pulse -`.
 - **Timeline scrubbing or zoom.** The histogram is a static overview; you can't
   yet click or scroll along the time axis to jump.
-- **Other log formats.** NDJSON, logfmt, and EDN today (auto-detect by
-  content; override with `--format=ndjson|logfmt|edn`). Plain text with
+- **Other log formats.** NDJSON, logfmt, EDN, and Python `logging`
+  default format today (auto-detect for the first three; pass
+  `--format=python` for Python until detection lands). Plain text with
   regex extraction, CEE/syslog, Apache/nginx access logs — not yet.
 - **Stack-trace folding.** Multi-line Go / Rust / Java tracebacks are not
   collapsed into one row.

@@ -131,8 +131,9 @@ fn run() -> Result<()> {
         Some("ndjson") => Some(LogFormat::Ndjson),
         Some("logfmt") => Some(LogFormat::Logfmt),
         Some("edn") => Some(LogFormat::Edn),
+        Some("python") => Some(LogFormat::Python),
         Some(other) => anyhow::bail!(
-            "unknown --format value '{}'; valid: ndjson, logfmt, edn",
+            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python",
             other
         ),
     };

@@ -18,6 +18,7 @@ pub mod indexes;
 pub mod parse;
 pub mod parse_edn;
 pub mod parse_logfmt;
+pub mod parse_python;
 pub mod predicate;
 pub mod query;
 
