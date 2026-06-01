@@ -1,11 +1,13 @@
 //! StreamProducer: BufRead-backed source for stdin and (in v0.2) growing tails.
 //!
 //! Emits records with `RecordBytes::Owned(Box<[u8]>)`. No mmap, no lifetimes
-//! crossing thread boundaries.
+//! crossing thread boundaries. Parses `ts`/`level` at emit time, same as
+//! FileProducer — so k-way merge downstream has timestamps.
 
 use std::io::BufRead;
 
-use crate::engine::record::{RawRecord, RecordBytes, TS_UNTIMED};
+use crate::engine::parse::{ts_and_level, ParseStats};
+use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
 pub struct StreamProducer<R: BufRead> {
@@ -14,6 +16,7 @@ pub struct StreamProducer<R: BufRead> {
     line_id_counter: u64,
     scratch: Vec<u8>,
     closed: bool,
+    stats: ParseStats,
 }
 
 impl<R: BufRead> StreamProducer<R> {
@@ -24,11 +27,16 @@ impl<R: BufRead> StreamProducer<R> {
             line_id_counter: 0,
             scratch: Vec::with_capacity(4096),
             closed: false,
+            stats: ParseStats::default(),
         }
     }
 
     pub fn source_id(&self) -> u32 {
         self.source_id
+    }
+
+    pub fn stats(&self) -> ParseStats {
+        self.stats
     }
 }
 
@@ -45,35 +53,31 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
                     return None;
                 }
                 Ok(_) => {
-                    // Trim trailing newline (and \r if it was a Windows-style line).
                     if let Some(&b) = self.scratch.last() {
-                        if b == b'\n' {
-                            self.scratch.pop();
-                        }
+                        if b == b'\n' { self.scratch.pop(); }
                     }
                     if let Some(&b) = self.scratch.last() {
-                        if b == b'\r' {
-                            self.scratch.pop();
-                        }
+                        if b == b'\r' { self.scratch.pop(); }
                     }
                     if self.scratch.is_empty() {
-                        // Blank line — not a record. Loop.
                         continue;
                     }
+                    let (ts_micros, severity) =
+                        ts_and_level(&self.scratch, &mut self.stats);
                     let line_id = self.line_id_counter;
                     self.line_id_counter += 1;
                     let owned = self.scratch.clone().into_boxed_slice();
                     return Some(RawRecord {
                         source_id: self.source_id,
                         line_id,
-                        ts_micros: TS_UNTIMED,
-                        severity: 0,
+                        ts_micros,
+                        severity,
                         bytes: RecordBytes::Owned(owned),
                     });
                 }
                 Err(_) => {
-                    // IO error — close the stream silently in v0.1. M2 will
-                    // surface this via a tracing::warn! and a status-line hint.
+                    // IO error — close silently in v0.1. M2 surfaces this via
+                    // tracing::warn! and a status-line hint.
                     self.closed = true;
                     return None;
                 }
@@ -82,8 +86,6 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
     }
 
     fn is_live(&self) -> bool {
-        // Stream sources may continue to emit until EOF. After EOF (read 0)
-        // we set `closed = true` and report `is_live = false` to match.
         !self.closed
     }
 }
@@ -91,6 +93,7 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::record::severity;
     use std::io::Cursor;
 
     #[test]
@@ -114,5 +117,15 @@ mod tests {
                 _ => panic!("expected Owned"),
             }
         }
+    }
+
+    #[test]
+    fn ts_and_level_parsed_for_json_lines() {
+        let body =
+            b"{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"warn\",\"msg\":\"x\"}\n";
+        let mut prod = StreamProducer::new(Cursor::new(body.to_vec()), 0);
+        let r = prod.next().unwrap();
+        assert_eq!(r.severity, severity::WARN);
+        assert!(r.ts_micros > 0);
     }
 }

@@ -1,9 +1,9 @@
 //! FileProducer: mmap-backed source.
 //!
 //! Owns `Arc<Mmap>`. Lines are found via `memchr::memchr_iter(b'\n', ...)`.
-//! Emits records that reference the mmap via offset/length, not a borrowed
-//! slice with a lifetime. The engine resolves bytes against a per-pass
-//! snapshot of `Arc<Mmap>` keyed by `source_id`.
+//! Each emitted record carries the line's mmap location AND its parsed
+//! `ts_micros`/`severity` — the producer is the single place where NDJSON
+//! parse happens, so k-way merge downstream has timestamps to sort on.
 
 use std::fs::File;
 use std::path::Path;
@@ -12,38 +12,34 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use memmap2::Mmap;
 
-use crate::engine::record::{RawRecord, RecordBytes, TS_UNTIMED};
+use crate::engine::parse::{ts_and_level, ParseStats};
+use crate::engine::record::{RawRecord, RecordBytes};
 use crate::io::RecordProducer;
 
 pub struct FileProducer {
     source_id: u32,
     mmap: Arc<Mmap>,
-    // Cursor in bytes into the mmap.
     cursor: usize,
     line_id_counter: u64,
+    stats: ParseStats,
 }
 
 impl FileProducer {
-    /// Open `path` and mmap it. The file is held open via the Mmap (the
-    /// underlying File is dropped — mmap owns the kernel handle).
     pub fn open<P: AsRef<Path>>(path: P, source_id: u32) -> Result<Self> {
         let path = path.as_ref();
         let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-        // SAFETY: we don't write to the mmap, and Mmap::map's contract about
-        // file mutation under us is well-understood: a process truncating the
-        // file from underneath would be a bug we don't promise to survive in
-        // v0.1 — that's the static-file path. Live tails go through stream.
+        // SAFETY: read-only access; we don't promise to survive concurrent
+        // truncation of static files in v0.1. Live tails go through stream.
         let mmap = unsafe { Mmap::map(&file)? };
         Ok(Self {
             source_id,
             mmap: Arc::new(mmap),
             cursor: 0,
             line_id_counter: 0,
+            stats: ParseStats::default(),
         })
     }
 
-    /// Hand a shared snapshot of the mmap. The engine keeps these per
-    /// `source_id` to resolve `RecordBytes::FileRef` in the hot read path.
     pub fn mmap(&self) -> Arc<Mmap> {
         Arc::clone(&self.mmap)
     }
@@ -55,44 +51,51 @@ impl FileProducer {
     pub fn total_bytes(&self) -> u64 {
         self.mmap.len() as u64
     }
+
+    /// Cumulative parse stats since `open`. The engine collects these per
+    /// source and folds them into the aggregate counters.
+    pub fn stats(&self) -> ParseStats {
+        self.stats
+    }
 }
 
 impl RecordProducer for FileProducer {
     fn next(&mut self) -> Option<RawRecord> {
         let buf: &[u8] = &self.mmap[..];
-        if self.cursor >= buf.len() {
-            return None;
-        }
-        // Locate the next newline, or take to EOF.
-        let rest = &buf[self.cursor..];
-        let nl = memchr::memchr(b'\n', rest);
-        let (line_len, advance) = match nl {
-            Some(pos) => (pos, pos + 1),
-            None => (rest.len(), rest.len()),
-        };
-        // Skip empty lines (blank "" between two \n) — they're not records.
-        if line_len == 0 {
+        loop {
+            if self.cursor >= buf.len() {
+                return None;
+            }
+            let rest = &buf[self.cursor..];
+            let (line_len, advance) = match memchr::memchr(b'\n', rest) {
+                Some(pos) => (pos, pos + 1),
+                None => (rest.len(), rest.len()),
+            };
+            if line_len == 0 {
+                // Blank line — skip, do not emit. Stay in the loop.
+                self.cursor += advance;
+                continue;
+            }
+            let offset = self.cursor as u64;
+            let len = line_len as u32;
+            let line_bytes = &buf[self.cursor..self.cursor + line_len];
+            let (ts_micros, severity) = ts_and_level(line_bytes, &mut self.stats);
+
+            let line_id = self.line_id_counter;
+            self.line_id_counter += 1;
             self.cursor += advance;
-            return self.next();
-        }
-        let offset = self.cursor as u64;
-        let len = line_len as u32;
-        let line_id = self.line_id_counter;
-        self.line_id_counter += 1;
-        self.cursor += advance;
-        Some(RawRecord {
-            source_id: self.source_id,
-            line_id,
-            // ts and severity are filled in by the indexer — the producer
-            // hands raw bytes only; the engine owns parsing.
-            ts_micros: TS_UNTIMED,
-            severity: 0,
-            bytes: RecordBytes::FileRef {
+            return Some(RawRecord {
                 source_id: self.source_id,
-                offset,
-                len,
-            },
-        })
+                line_id,
+                ts_micros,
+                severity,
+                bytes: RecordBytes::FileRef {
+                    source_id: self.source_id,
+                    offset,
+                    len,
+                },
+            });
+        }
     }
 
     fn is_live(&self) -> bool {
@@ -103,6 +106,7 @@ impl RecordProducer for FileProducer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::record::severity;
     use std::io::Write;
 
     fn write_tmp(name: &str, body: &[u8]) -> std::path::PathBuf {
@@ -164,6 +168,19 @@ mod tests {
         assert!(prod.next().is_none());
         assert_eq!(r1.line_id, 0);
         assert_eq!(r2.line_id, 1);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn ts_and_level_are_parsed_at_emit_time() {
+        let p = write_tmp(
+            "parsed",
+            b"{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"error\",\"msg\":\"x\"}\n",
+        );
+        let mut prod = FileProducer::open(&p, 0).unwrap();
+        let r1 = prod.next().unwrap();
+        assert_eq!(r1.severity, severity::ERROR);
+        assert!(r1.ts_micros > 0);
         let _ = std::fs::remove_file(&p);
     }
 }

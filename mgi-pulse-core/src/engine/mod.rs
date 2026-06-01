@@ -11,11 +11,12 @@
 
 pub mod record;
 
+pub mod histogram;
 pub mod indexer;
 pub mod indexes;
+pub mod parse;
 pub mod predicate;
 pub mod query;
-pub mod histogram;
 
 use std::sync::Arc;
 

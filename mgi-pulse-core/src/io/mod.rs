@@ -13,6 +13,7 @@
 //! See project memory for the rationale.
 
 pub mod file;
+pub mod merge;
 pub mod stream;
 
 use crate::engine::record::RawRecord;
