@@ -953,8 +953,7 @@ mod tests {
     /// with the generation bumped so any cached histogram is rebuilt.
     #[test]
     fn clear_filters_returns_to_all_and_bumps_generation() {
-        let records: Vec<(i64, u8)> =
-            (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let records: Vec<(i64, u8)> = (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
         let engine = synthetic_engine(&records);
 
         let mut view = View::new_all(&engine);
