@@ -149,7 +149,22 @@ pub fn render(
     } else {
         Vec::new()
     };
-    let raw_w = inner_w.saturating_sub((auto_cols.len() * (COL_FIELD_W + 1)) as u16) as usize;
+    // Raw remainder column.
+    //
+    // In less-mode (no structured fields), the raw payload IS the table —
+    // we show the full line in whatever width is left.
+    //
+    // In structured mode, auto-columns already project the useful fields.
+    // A trailing raw column then just duplicates them — the same JSON the
+    // user can see in detail-pane (`d`) ends up shoulder-to-shoulder with
+    // the parsed cells, eats horizontal room, and undercuts the pitch
+    // ("we turn raw lines into a typed table"). So we suppress it here
+    // and let the auto-columns own the width.
+    let raw_w = if auto_cols.is_empty() {
+        inner_w as usize
+    } else {
+        0
+    };
 
     let start = lower_bound(filtered_view, scroll_top);
     let visible = inner.height as usize;

@@ -603,15 +603,21 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             // `All`); hide the timeline when no record had a parseable ts.
             let show_tabs = app.views.len() > 1;
             let show_timeline = app.engine.has_timestamps();
-            let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+            // Layout from top to bottom: optional tab bar (3 rows so the
+            // active tab can carry a box frame), prompt line that sits
+            // directly below the tabs so the eye stays in one place when
+            // typing a query, optional timeline, table, two-row status
+            // (summary + key hints).
+            let mut constraints: Vec<Constraint> = Vec::with_capacity(5);
             if show_tabs {
-                constraints.push(Constraint::Length(1));
+                constraints.push(Constraint::Length(3));
             }
+            constraints.push(Constraint::Length(1));
             if show_timeline {
                 constraints.push(Constraint::Length(4));
             }
             constraints.push(Constraint::Min(3));
-            constraints.push(Constraint::Length(1));
+            constraints.push(Constraint::Length(2));
             let outer = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints(constraints)
@@ -626,6 +632,8 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             } else {
                 None
             };
+            let prompt_slot = slot;
+            slot += 1;
             let timeline_slot = if show_timeline {
                 let s = slot;
                 slot += 1;
@@ -642,12 +650,28 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             // click.
             app.tab_hitboxes.clear();
             if let Some(slot) = tabs_slot {
-                let mut tab_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
-                let mut col: u16 = outer[slot].x;
-                let row = outer[slot].y;
+                // Three-row tab bar with a box frame around the active tab.
+                // Row 0: top borders (`┌──┐` only over active, blank elsewhere)
+                // Row 1: the labels themselves
+                // Row 2: bottom borders (`└──┘` over active, `──` elsewhere)
+                //
+                // The frame makes the active tab obviously taller and wider
+                // than the inactive ones — works in any monospace terminal,
+                // independent of palette, without depending on bg fill.
+                let area = outer[slot];
+                let mut top_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
+                let mut mid_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
+                let mut bot_spans: Vec<Span> = Vec::with_capacity(app.views.len() * 3);
+                let mut col: u16 = area.x;
+                let mid_row = area.y + 1;
+                let dim = app.theme.hint_dim();
+                let active_style = app.theme.active_tab_style();
+                let inactive_style = app.theme.inactive_tab_style();
                 for (i, v) in app.views.iter().enumerate() {
                     if i > 0 {
-                        tab_spans.push(Span::raw(" "));
+                        top_spans.push(Span::raw(" "));
+                        mid_spans.push(Span::raw(" "));
+                        bot_spans.push(Span::raw(" "));
                         col += 1;
                     }
                     let suffix = if v.severity_min_mode && !v.severity_levels.is_empty() {
@@ -656,18 +680,56 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                         ""
                     };
                     let label = format!(" {}{} ", v.title, suffix);
-                    let style = if i == app.active_tab {
-                        app.theme.active_tab_style()
-                    } else {
-                        app.theme.inactive_tab_style()
-                    };
                     let label_w = label.chars().count() as u16;
-                    app.tab_hitboxes.push((col, row, label_w, i));
-                    col += label_w;
-                    tab_spans.push(Span::styled(label, style));
+                    let inner_w = label_w as usize;
+                    if i == app.active_tab {
+                        let top = format!("┌{}┐", "─".repeat(inner_w));
+                        let bot = format!("└{}┘", "─".repeat(inner_w));
+                        top_spans.push(Span::styled(top, active_style));
+                        mid_spans.push(Span::styled(format!("│{}│", label), active_style));
+                        bot_spans.push(Span::styled(bot, active_style));
+                        // Mouse hitbox covers the label row only; outer
+                        // frame width is +2 so widen the catch area.
+                        app.tab_hitboxes
+                            .push((col, mid_row, label_w + 2, i));
+                        col += label_w + 2;
+                    } else {
+                        top_spans.push(Span::styled(" ".repeat(inner_w + 2), dim));
+                        mid_spans.push(Span::styled(format!(" {} ", label), inactive_style));
+                        bot_spans.push(Span::styled("─".repeat(inner_w + 2), dim));
+                        app.tab_hitboxes.push((col + 1, mid_row, label_w, i));
+                        col += label_w + 2;
+                    }
                 }
-                let tabs_line = Paragraph::new(Line::from(tab_spans));
-                f.render_widget(tabs_line, outer[slot]);
+                use ratatui::layout::Rect;
+                let top_rect = Rect::new(area.x, area.y, area.width, 1);
+                let mid_rect = Rect::new(area.x, area.y + 1, area.width, 1);
+                let bot_rect = Rect::new(area.x, area.y + 2, area.width, 1);
+                f.render_widget(Paragraph::new(Line::from(top_spans)), top_rect);
+                f.render_widget(Paragraph::new(Line::from(mid_spans)), mid_rect);
+                f.render_widget(Paragraph::new(Line::from(bot_spans)), bot_rect);
+            }
+
+            // Prompt line — directly below the tabs so the eye doesn't have
+            // to travel to the bottom of the screen when typing a query.
+            // When no input is active, the line is blank.
+            {
+                let (prompt_label, prompt_buf) = match &app.input {
+                    Some(Input::Search(s)) => ("/", s.as_str()),
+                    Some(Input::Dsl(s)) => (":", s.as_str()),
+                    Some(Input::Filter(s)) => ("f", s.as_str()),
+                    Some(Input::JumpTime(s)) => ("t", s.as_str()),
+                    None => ("", ""),
+                };
+                if !prompt_label.is_empty() {
+                    let line = Line::from(vec![
+                        Span::styled(
+                            format!(" {} {}_", prompt_label, prompt_buf),
+                            app.theme.hint_bright(),
+                        ),
+                    ]);
+                    f.render_widget(Paragraph::new(line), outer[prompt_slot]);
+                }
             }
 
             // Timeline.
@@ -717,31 +779,16 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 );
             }
 
-            // Status bar.
-            let (prompt_label, prompt_buf) = match &app.input {
-                Some(Input::Search(s)) => ("/", s.as_str()),
-                Some(Input::Dsl(s)) => (":", s.as_str()),
-                Some(Input::Filter(s)) => ("f", s.as_str()),
-                Some(Input::JumpTime(s)) => ("t", s.as_str()),
-                None => ("", ""),
-            };
-
-            // Hint with `/` (and other primary actions) painted brighter than
-            // the rest so the user sees the entry points at a glance.
+            // Status bar — two lines:
+            //   row 0: filter summary or status_msg (e.g. "204203 matches of
+            //          11000000"). Read-only; prompt input lives at the top.
+            //   row 1: key hints (always shown).
             let bright = app.theme.hint_bright();
             let dim = app.theme.hint_dim();
+
+            let summary_line = Line::from(vec![Span::styled(v.status_msg.clone(), dim)]);
+
             let mut hint_spans: Vec<Span> = Vec::new();
-            // The leading status line / prompt.
-            if !prompt_label.is_empty() {
-                hint_spans.push(Span::styled(
-                    format!("{} {}_", prompt_label, prompt_buf),
-                    bright,
-                ));
-            } else {
-                hint_spans.push(Span::styled(v.status_msg.clone(), dim));
-            }
-            hint_spans.push(Span::raw("   "));
-            // Primary actions in bright; everything else dim.
             hint_spans.push(Span::styled("/", bright));
             hint_spans.push(Span::styled(" search · ", dim));
             if show_tabs {
@@ -762,7 +809,6 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 hint_spans.push(Span::styled("Tab", bright));
                 hint_spans.push(Span::styled(" next · ", dim));
             } else {
-                // Plain-text: only the keys that actually do something.
                 hint_spans.push(Span::styled("d", bright));
                 hint_spans.push(Span::styled(" context · ", dim));
                 hint_spans.push(Span::styled("b/B", bright));
@@ -772,8 +818,9 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             hint_spans.push(Span::styled(" clear · ", dim));
             hint_spans.push(Span::styled("q", bright));
             hint_spans.push(Span::styled(" quit", dim));
+            let hint_line = Line::from(hint_spans);
 
-            let status = Paragraph::new(Line::from(hint_spans))
+            let status = Paragraph::new(vec![summary_line, hint_line])
                 .block(Block::default().borders(Borders::NONE));
             f.render_widget(status, outer[status_slot]);
         })?;

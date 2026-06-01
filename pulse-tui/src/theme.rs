@@ -81,16 +81,22 @@ impl Theme {
     }
 
     /// Style for the active tab in the tab bar.
+    ///
+    /// History: previous versions used `bg(Blue) + fg(White)`. On terminals
+    /// that interpret `Color::Blue` as a saturated bright blue (WezTerm with
+    /// the default palette is a common case), white-on-blue can drop below
+    /// useful contrast and the label visually disappears. Switching to a
+    /// foreground-only accent (yellow + bold + underlined) sidesteps the
+    /// palette-dependence and matches the convention most other TUIs use
+    /// (htop, lazygit, helix).
     pub fn active_tab_style(self) -> Style {
         match self {
             Theme::Dark => Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             Theme::Light => Style::default()
-                .bg(Color::Blue)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
             Theme::NoColor => Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
         }
     }
