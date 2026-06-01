@@ -18,8 +18,8 @@
 //!   Live streams (stdin, growing tails) go through the stream path.
 //! - No async runtime. std::thread + crossbeam-channel.
 
-pub mod io;
 pub mod engine;
+pub mod io;
 pub mod schema;
 
 pub use engine::record::{RawRecord, RecordBytes};

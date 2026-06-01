@@ -15,16 +15,13 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{
-    self, Event, KeyCode, KeyModifiers, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, MouseEventKind};
 use mgi_pulse_core::engine::histogram::Histogram;
+use mgi_pulse_core::engine::parse::parse_rfc3339_micros;
 use mgi_pulse_core::engine::predicate::{
-    AndPredicate, FieldEqualsPredicate, Predicate, RegexBytesPredicate,
-    SeverityInPredicate,
+    AndPredicate, FieldEqualsPredicate, Predicate, RegexBytesPredicate, SeverityInPredicate,
 };
 use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
-use mgi_pulse_core::engine::parse::parse_rfc3339_micros;
 use mgi_pulse_core::engine::{query, Engine};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -129,10 +126,7 @@ impl View {
         let status_msg = if total == 0 {
             "no records loaded".to_string()
         } else if ps.untimed > 0 {
-            format!(
-                "{} records · {} untimed",
-                total, ps.untimed,
-            )
+            format!("{} records · {} untimed", total, ps.untimed,)
         } else {
             format!("{} records", total)
         };
@@ -388,18 +382,10 @@ impl App {
         let views = if engine.has_severity() {
             vec![
                 View::new_all(&engine),
-                View::new_with_severity(
-                    &engine,
-                    "Error",
-                    &[severity::ERROR, severity::FATAL],
-                ),
+                View::new_with_severity(&engine, "Error", &[severity::ERROR, severity::FATAL]),
                 View::new_with_severity(&engine, "Warn", &[severity::WARN]),
                 View::new_with_severity(&engine, "Info", &[severity::INFO]),
-                View::new_with_severity(
-                    &engine,
-                    "Debug",
-                    &[severity::DEBUG, severity::TRACE],
-                ),
+                View::new_with_severity(&engine, "Debug", &[severity::DEBUG, severity::TRACE]),
             ]
         } else {
             vec![View::new_all(&engine)]
@@ -487,10 +473,7 @@ pub fn run(mut app: App, mouse_capture: bool) -> Result<()> {
     result
 }
 
-fn run_loop<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()> {
+fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
         // Ensure the active view's histogram is built before the closure
         // takes an immutable borrow of app. Borrow gymnastics: split the
@@ -498,7 +481,12 @@ fn run_loop<B: ratatui::backend::Backend>(
         let term_w = terminal.size()?.width;
         let bars = term_w.saturating_sub(2);
         {
-            let App { engine, views, active_tab, .. } = app;
+            let App {
+                engine,
+                views,
+                active_tab,
+                ..
+            } = app;
             let _ = views[*active_tab].histogram(engine, bars);
         }
 
@@ -511,8 +499,12 @@ fn run_loop<B: ratatui::backend::Backend>(
             let show_tabs = app.views.len() > 1;
             let show_timeline = app.engine.has_timestamps();
             let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
-            if show_tabs { constraints.push(Constraint::Length(1)); }
-            if show_timeline { constraints.push(Constraint::Length(4)); }
+            if show_tabs {
+                constraints.push(Constraint::Length(1));
+            }
+            if show_timeline {
+                constraints.push(Constraint::Length(4));
+            }
             constraints.push(Constraint::Min(3));
             constraints.push(Constraint::Length(1));
             let outer = Layout::default()
@@ -522,8 +514,20 @@ fn run_loop<B: ratatui::backend::Backend>(
 
             // Resolve which slot each pane occupies.
             let mut slot = 0usize;
-            let tabs_slot = if show_tabs { let s = slot; slot += 1; Some(s) } else { None };
-            let timeline_slot = if show_timeline { let s = slot; slot += 1; Some(s) } else { None };
+            let tabs_slot = if show_tabs {
+                let s = slot;
+                slot += 1;
+                Some(s)
+            } else {
+                None
+            };
+            let timeline_slot = if show_timeline {
+                let s = slot;
+                slot += 1;
+                Some(s)
+            } else {
+                None
+            };
             let table_slot = slot;
             let status_slot = slot + 1;
 
@@ -548,7 +552,10 @@ fn run_loop<B: ratatui::backend::Backend>(
                     };
                     let label = format!(" {}{} ", v.title, suffix);
                     let style = if i == app.active_tab {
-                        Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .bg(Color::Blue)
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
                     };
@@ -725,9 +732,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                     } else {
                         match (k.code, k.modifiers) {
                             (KeyCode::Char('q'), _) => should_break = true,
-                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                                should_break = true
-                            }
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => should_break = true,
                             (KeyCode::Char('t'), KeyModifiers::CONTROL) => {
                                 app.open_tab();
                             }
@@ -768,9 +773,7 @@ fn run_loop<B: ratatui::backend::Backend>(
                                 // the initial 10k warmup landed on a boot
                                 // banner with a different schema than the
                                 // body of the log.
-                                let view = app.views[app.active_tab]
-                                    .filtered_view
-                                    .clone();
+                                let view = app.views[app.active_tab].filtered_view.clone();
                                 app.engine.rescan_schema(&view);
                                 for v in &mut app.views {
                                     v.histogram_cache = None;

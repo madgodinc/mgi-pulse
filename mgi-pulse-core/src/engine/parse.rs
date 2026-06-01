@@ -99,11 +99,7 @@ pub fn ts_and_level(bytes: &[u8], stats: &mut ParseStats) -> (i64, u8) {
 /// field names instead of the hardcoded `ts` / `level`. Slower than
 /// [`ts_and_level`] because it goes through a borrowed HashMap; use it only
 /// when CLI override flags are set.
-pub fn ts_and_level_named(
-    bytes: &[u8],
-    fields: &FieldNames,
-    stats: &mut ParseStats,
-) -> (i64, u8) {
+pub fn ts_and_level_named(bytes: &[u8], fields: &FieldNames, stats: &mut ParseStats) -> (i64, u8) {
     let map: HashMap<&str, &RawValue> = match serde_json::from_slice(bytes) {
         Ok(m) => m,
         Err(_) => {
@@ -124,7 +120,10 @@ pub fn ts_and_level_named(
         .and_then(|v| strip_quotes(v.get()))
         .map(|s| severity::from_bytes(s.as_bytes()))
         .unwrap_or(severity::UNKNOWN);
-    let ts = match map.get(fields.ts.as_str()).and_then(|v| strip_quotes(v.get())) {
+    let ts = match map
+        .get(fields.ts.as_str())
+        .and_then(|v| strip_quotes(v.get()))
+    {
         Some(s) => match parse_rfc3339_micros(&s) {
             Some(v) => v,
             None => {
@@ -154,15 +153,25 @@ pub fn parse_rfc3339_micros(s: &str) -> Option<i64> {
         return None;
     }
     let year = ascii_u32(&b[0..4])? as i64;
-    if b[4] != b'-' { return None; }
+    if b[4] != b'-' {
+        return None;
+    }
     let month = ascii_u32(&b[5..7])? as i64;
-    if b[7] != b'-' { return None; }
+    if b[7] != b'-' {
+        return None;
+    }
     let day = ascii_u32(&b[8..10])? as i64;
-    if b[10] != b'T' && b[10] != b' ' { return None; }
+    if b[10] != b'T' && b[10] != b' ' {
+        return None;
+    }
     let hour = ascii_u32(&b[11..13])? as i64;
-    if b[13] != b':' { return None; }
+    if b[13] != b':' {
+        return None;
+    }
     let minute = ascii_u32(&b[14..16])? as i64;
-    if b[16] != b':' { return None; }
+    if b[16] != b':' {
+        return None;
+    }
     let second = ascii_u32(&b[17..19])? as i64;
 
     let mut cursor = 19;
@@ -198,7 +207,9 @@ pub fn parse_rfc3339_micros(s: &str) -> Option<i64> {
                 return None;
             }
             let oh = ascii_u32(&b[cursor..cursor + 2])? as i64;
-            if b[cursor + 2] != b':' { return None; }
+            if b[cursor + 2] != b':' {
+                return None;
+            }
             let om = ascii_u32(&b[cursor + 3..cursor + 5])? as i64;
             cursor += 5;
             sign * (oh * 3600 + om * 60)
@@ -243,7 +254,10 @@ mod tests {
     #[test]
     fn rfc3339_basic() {
         assert_eq!(parse_rfc3339_micros("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_rfc3339_micros("1970-01-01T00:00:01Z"), Some(1_000_000));
+        assert_eq!(
+            parse_rfc3339_micros("1970-01-01T00:00:01Z"),
+            Some(1_000_000)
+        );
     }
 
     #[test]

@@ -32,7 +32,11 @@ fn synth_record(engine: &Engine, line_id: u64) -> crate::engine::record::RawReco
     crate::engine::record::RawRecord {
         source_id: loc.source_id,
         line_id,
-        ts_micros: engine.indexes.time.get(line_id).unwrap_or(crate::engine::record::TS_UNTIMED),
+        ts_micros: engine
+            .indexes
+            .time
+            .get(line_id)
+            .unwrap_or(crate::engine::record::TS_UNTIMED),
         severity: engine.indexes.severity.get(line_id).unwrap_or(0),
         bytes: crate::engine::record::RecordBytes::FileRef {
             source_id: loc.source_id,

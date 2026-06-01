@@ -59,13 +59,10 @@ impl SchemaBuilder {
             Err(_) => return,
         };
         for (k, v) in map {
-            let entry = self
-                .fields
-                .entry(SmolStr::new(k))
-                .or_insert(FieldStats {
-                    presence: 0,
-                    all_strings: true,
-                });
+            let entry = self.fields.entry(SmolStr::new(k)).or_insert(FieldStats {
+                presence: 0,
+                all_strings: true,
+            });
             entry.presence += 1;
             // Cheap "is a JSON string?" check on RawValue: first non-space
             // byte is `"`. RawValue keeps the source verbatim.
@@ -80,11 +77,7 @@ impl SchemaBuilder {
     pub fn lock(self) -> LockedSchema {
         let mut entries: Vec<(SmolStr, FieldStats)> = self.fields.into_iter().collect();
         // Sort by presence descending, then by name for determinism.
-        entries.sort_by(|a, b| {
-            b.1.presence
-                .cmp(&a.1.presence)
-                .then_with(|| a.0.cmp(&b.0))
-        });
+        entries.sort_by(|a, b| b.1.presence.cmp(&a.1.presence).then_with(|| a.0.cmp(&b.0)));
         LockedSchema {
             ordered_fields: entries,
             records_scanned: self.records_scanned,
@@ -116,9 +109,7 @@ impl LockedSchema {
 /// Tiny serde wrapper used by the table-pane field projector. Returns the raw
 /// JSON value for a given key, without parsing nested children.
 #[derive(Deserialize)]
-struct FieldsView<'a>(
-    #[serde(borrow)] HashMap<&'a str, &'a RawValue>,
-);
+struct FieldsView<'a>(#[serde(borrow)] HashMap<&'a str, &'a RawValue>);
 
 /// Extract one field's raw JSON text from a line, or None if not present.
 /// Used by the table renderer in the column hot path — called once per

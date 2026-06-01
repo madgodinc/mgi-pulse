@@ -182,11 +182,7 @@ fn main() -> Result<()> {
     let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
     let mmap = unsafe { Mmap::map(&file)? };
     let buf: &[u8] = &mmap[..];
-    println!(
-        "file = {} ({} MB)",
-        path.display(),
-        buf.len() / 1_048_576
-    );
+    println!("file = {} ({} MB)", path.display(), buf.len() / 1_048_576);
 
     // Run each strategy twice. The first run warms the page cache (the kernel
     // pulls the file into RAM); the second is what we report. With 2 GB and

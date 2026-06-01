@@ -61,10 +61,14 @@ impl<R: BufRead> RecordProducer for StreamProducer<R> {
                 }
                 Ok(_) => {
                     if let Some(&b) = self.scratch.last() {
-                        if b == b'\n' { self.scratch.pop(); }
+                        if b == b'\n' {
+                            self.scratch.pop();
+                        }
                     }
                     if let Some(&b) = self.scratch.last() {
-                        if b == b'\r' { self.scratch.pop(); }
+                        if b == b'\r' {
+                            self.scratch.pop();
+                        }
                     }
                     if self.scratch.is_empty() {
                         continue;
@@ -130,8 +134,7 @@ mod tests {
 
     #[test]
     fn ts_and_level_parsed_for_json_lines() {
-        let body =
-            b"{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"warn\",\"msg\":\"x\"}\n";
+        let body = b"{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"warn\",\"msg\":\"x\"}\n";
         let mut prod = StreamProducer::new(Cursor::new(body.to_vec()), 0);
         let r = prod.next().unwrap();
         assert_eq!(r.severity, severity::WARN);

@@ -47,22 +47,22 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
     // context view if parsing fails. Truncated input is unlikely to parse
     // as JSON; we still try, but mostly this hits the plain-text path.
     if !truncated {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
-        if let Ok(pretty) = serde_json::to_string_pretty(&v) {
-            let lines: Vec<Line> = pretty
-                .lines()
-                .map(|l| {
-                    Line::from(Span::styled(
-                        l.to_string(),
-                        Style::default().fg(Color::Gray),
-                    ))
-                })
-                .collect();
-            let p = Paragraph::new(lines).wrap(Wrap { trim: false });
-            f.render_widget(p, inner);
-            return;
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(bytes) {
+            if let Ok(pretty) = serde_json::to_string_pretty(&v) {
+                let lines: Vec<Line> = pretty
+                    .lines()
+                    .map(|l| {
+                        Line::from(Span::styled(
+                            l.to_string(),
+                            Style::default().fg(Color::Gray),
+                        ))
+                    })
+                    .collect();
+                let p = Paragraph::new(lines).wrap(Wrap { trim: false });
+                f.render_widget(p, inner);
+                return;
+            }
         }
-    }
     }
 
     // Plain-text path: show context around the focused line so multi-line
@@ -82,7 +82,9 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
         };
         let text = String::from_utf8_lossy(raw);
         let style = if lid == line_id {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
@@ -93,9 +95,17 @@ pub fn render(f: &mut Frame, area: Rect, engine: &Engine, line_id: u64) {
             String::new()
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{}{:>6}  ", marker, lid), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{}{:>6}  ", marker, lid),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(text.to_string(), style),
-            Span::styled(suffix, Style::default().fg(Color::Yellow).add_modifier(Modifier::DIM)),
+            Span::styled(
+                suffix,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::DIM),
+            ),
         ]));
     }
 

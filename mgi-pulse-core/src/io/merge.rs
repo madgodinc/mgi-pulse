@@ -75,7 +75,10 @@ impl MergeProducer {
     fn prime(&mut self) {
         for (i, p) in self.producers.iter_mut().enumerate() {
             if let Some(rec) = p.next() {
-                self.heap.push(Slot { rec, producer_idx: i });
+                self.heap.push(Slot {
+                    rec,
+                    producer_idx: i,
+                });
             }
         }
         self.primed = true;
@@ -88,7 +91,10 @@ impl RecordProducer for MergeProducer {
             self.prime();
         }
         let slot = self.heap.pop()?;
-        let Slot { mut rec, producer_idx } = slot;
+        let Slot {
+            mut rec,
+            producer_idx,
+        } = slot;
         // Replenish that producer's slot.
         if let Some(next_rec) = self.producers[producer_idx].next() {
             self.heap.push(Slot {
@@ -196,12 +202,7 @@ mod tests {
         }
         assert_eq!(
             emitted,
-            vec![
-                (0, 1, TS_UNTIMED),
-                (1, 0, 500),
-                (2, 1, 1000),
-                (3, 0, 1500),
-            ]
+            vec![(0, 1, TS_UNTIMED), (1, 0, 500), (2, 1, 1000), (3, 0, 1500),]
         );
     }
 
@@ -222,12 +223,7 @@ mod tests {
         }
         assert_eq!(
             emitted,
-            vec![
-                (0, 0, 10),
-                (1, 1, 20),
-                (2, 1, 30),
-                (3, 1, 40),
-            ]
+            vec![(0, 0, 10), (1, 1, 20), (2, 1, 30), (3, 1, 40),]
         );
     }
 }

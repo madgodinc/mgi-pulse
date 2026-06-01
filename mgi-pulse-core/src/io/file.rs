@@ -146,10 +146,7 @@ mod tests {
 
     #[test]
     fn emits_one_record_per_line() {
-        let p = write_tmp(
-            "basic",
-            b"{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n",
-        );
+        let p = write_tmp("basic", b"{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n");
         let mut prod = FileProducer::open(&p, 0).unwrap();
         let r1 = prod.next().unwrap();
         let r2 = prod.next().unwrap();
@@ -157,9 +154,21 @@ mod tests {
         assert!(prod.next().is_none());
         match (r1.bytes, r2.bytes, r3.bytes) {
             (
-                RecordBytes::FileRef { offset: o1, len: l1, .. },
-                RecordBytes::FileRef { offset: o2, len: l2, .. },
-                RecordBytes::FileRef { offset: o3, len: l3, .. },
+                RecordBytes::FileRef {
+                    offset: o1,
+                    len: l1,
+                    ..
+                },
+                RecordBytes::FileRef {
+                    offset: o2,
+                    len: l2,
+                    ..
+                },
+                RecordBytes::FileRef {
+                    offset: o3,
+                    len: l3,
+                    ..
+                },
             ) => {
                 assert_eq!((o1, l1), (0, 7));
                 assert_eq!((o2, l2), (8, 7));

@@ -44,12 +44,24 @@ impl Bin {
     /// info paints the bin red. That is the point: the eye should find
     /// outliers without scanning.
     pub fn dominant_severity(&self) -> u8 {
-        if self.fatal > 0 { return severity::FATAL; }
-        if self.error > 0 { return severity::ERROR; }
-        if self.warn > 0 { return severity::WARN; }
-        if self.info > 0 { return severity::INFO; }
-        if self.debug > 0 { return severity::DEBUG; }
-        if self.trace > 0 { return severity::TRACE; }
+        if self.fatal > 0 {
+            return severity::FATAL;
+        }
+        if self.error > 0 {
+            return severity::ERROR;
+        }
+        if self.warn > 0 {
+            return severity::WARN;
+        }
+        if self.info > 0 {
+            return severity::INFO;
+        }
+        if self.debug > 0 {
+            return severity::DEBUG;
+        }
+        if self.trace > 0 {
+            return severity::TRACE;
+        }
         severity::UNKNOWN
     }
 }
@@ -96,8 +108,12 @@ impl Histogram {
                 untimed += 1;
                 continue;
             }
-            if t < t_min { t_min = t; }
-            if t > t_max { t_max = t; }
+            if t < t_min {
+                t_min = t;
+            }
+            if t > t_max {
+                t_max = t;
+            }
         }
         if t_min == i64::MAX {
             return Self {
@@ -142,13 +158,17 @@ impl Histogram {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Engine;
     use crate::engine::indexes::LineLoc;
+    use crate::engine::Engine;
 
     fn make_engine(records: &[(i64, u8)]) -> Engine {
         let mut e = Engine::new();
         for &(t, sev) in records {
-            e.indexes.line.locs.push(LineLoc { source_id: 0, offset: 0, len: 0 });
+            e.indexes.line.locs.push(LineLoc {
+                source_id: 0,
+                offset: 0,
+                len: 0,
+            });
             e.indexes.time.ts.push(t);
             e.indexes.severity.levels.push(sev);
             // owned_lines is now sparse — file-style fixtures leave it empty.
@@ -174,7 +194,9 @@ mod tests {
     #[test]
     fn dominant_severity_picks_error_over_info() {
         let mut b = Bin::default();
-        for _ in 0..1000 { b.add(severity::INFO); }
+        for _ in 0..1000 {
+            b.add(severity::INFO);
+        }
         b.add(severity::ERROR);
         assert_eq!(b.dominant_severity(), severity::ERROR);
     }
@@ -212,10 +234,7 @@ mod tests {
 
     #[test]
     fn last_record_lands_in_last_bin() {
-        let recs = vec![
-            (0_i64, severity::INFO),
-            (100, severity::ERROR),
-        ];
+        let recs = vec![(0_i64, severity::INFO), (100, severity::ERROR)];
         let e = make_engine(&recs);
         let h = Histogram::build(&e, 5);
         assert_eq!(h.bins.last().unwrap().error, 1);

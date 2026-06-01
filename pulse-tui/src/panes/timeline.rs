@@ -56,9 +56,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// Render the cached histogram. The caller (App) owns the cache so this pane
 /// stays free of work on every redraw.
 pub fn render(f: &mut Frame, area: Rect, h: &Histogram) {
-    let block = Block::default()
-        .title(" timeline ")
-        .borders(Borders::ALL);
+    let block = Block::default().title(" timeline ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -103,10 +101,7 @@ pub fn render(f: &mut Frame, area: Rect, h: &Histogram) {
         Line::from(vec![
             Span::styled(label_left, Style::default().add_modifier(Modifier::DIM)),
             Span::raw(" "),
-            Span::styled(
-                center_summary,
-                Style::default().add_modifier(Modifier::DIM),
-            ),
+            Span::styled(center_summary, Style::default().add_modifier(Modifier::DIM)),
             Span::raw(" "),
             Span::styled(label_right, Style::default().add_modifier(Modifier::DIM)),
         ]),

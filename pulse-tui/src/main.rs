@@ -126,11 +126,7 @@ fn run() -> Result<()> {
         // Single file: fast path that keeps line_id == arrival order.
         // Multiple files: k-way merge by ts_micros — line_id becomes
         // time-sorted (see engine::record bifurcation note).
-        let stdin_count = cli
-            .files
-            .iter()
-            .filter(|p| p.as_os_str() == "-")
-            .count();
+        let stdin_count = cli.files.iter().filter(|p| p.as_os_str() == "-").count();
         if stdin_count > 0 && cli.files.len() > 1 {
             anyhow::bail!(
                 "mixing stdin and files in one run is not supported in v0.1; \
@@ -181,8 +177,16 @@ fn run() -> Result<()> {
             .unwrap_or_default();
         println!(
             "schema: {} fields scanned ({} records in warmup), auto-columns: {:?}",
-            engine.schema.as_ref().map(|s| s.ordered_fields.len()).unwrap_or(0),
-            engine.schema.as_ref().map(|s| s.records_scanned).unwrap_or(0),
+            engine
+                .schema
+                .as_ref()
+                .map(|s| s.ordered_fields.len())
+                .unwrap_or(0),
+            engine
+                .schema
+                .as_ref()
+                .map(|s| s.records_scanned)
+                .unwrap_or(0),
             cols
         );
         return Ok(());
@@ -192,14 +196,10 @@ fn run() -> Result<()> {
     app::run(app, !cli.no_mouse)
 }
 
-fn ingest_file(
-    path: &PathBuf,
-    engine: &mut Engine,
-    fields: Option<FieldNames>,
-) -> Result<()> {
+fn ingest_file(path: &PathBuf, engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
     let t0 = Instant::now();
-    let mut producer = FileProducer::open(path, 0)
-        .with_context(|| format!("open {}", path.display()))?;
+    let mut producer =
+        FileProducer::open(path, 0).with_context(|| format!("open {}", path.display()))?;
     if let Some(f) = fields {
         producer = producer.with_fields(f);
     }
@@ -218,11 +218,7 @@ fn ingest_file(
     Ok(())
 }
 
-fn ingest_merged(
-    paths: &[PathBuf],
-    engine: &mut Engine,
-    fields: Option<FieldNames>,
-) -> Result<()> {
+fn ingest_merged(paths: &[PathBuf], engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
     let t0 = Instant::now();
     let mut producers: Vec<Box<dyn RecordProducer>> = Vec::with_capacity(paths.len());
     let mut total_bytes: u64 = 0;
@@ -276,7 +272,10 @@ fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>) -> Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_env("MGI_PULSE_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("warn"));
-    fmt().with_env_filter(filter).with_writer(std::io::stderr).init();
+    let filter =
+        EnvFilter::try_from_env("MGI_PULSE_LOG").unwrap_or_else(|_| EnvFilter::new("warn"));
+    fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }

@@ -132,11 +132,19 @@ mod tests {
         let mut ti = TimeIndex::default();
         let mut si = SeverityIndex::default();
 
-        let id1 = li.push(LineLoc { source_id: 0, offset: 0, len: 10 });
+        let id1 = li.push(LineLoc {
+            source_id: 0,
+            offset: 0,
+            len: 10,
+        });
         ti.push(1_700_000_000_000_000);
         si.push(severity::INFO);
 
-        let id2 = li.push(LineLoc { source_id: 0, offset: 10, len: 12 });
+        let id2 = li.push(LineLoc {
+            source_id: 0,
+            offset: 10,
+            len: 12,
+        });
         ti.push(1_700_000_001_000_000);
         si.push(severity::ERROR);
 

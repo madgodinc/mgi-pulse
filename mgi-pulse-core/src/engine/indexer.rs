@@ -40,18 +40,19 @@ impl Indexes {
 ///
 /// The producer must have already parsed `ts` and `level` into the
 /// `RawRecord`; the indexer trusts those fields and does not re-parse.
-pub fn drain<P: crate::io::RecordProducer>(
-    producer: &mut P,
-    engine: &mut crate::engine::Engine,
-) {
+pub fn drain<P: crate::io::RecordProducer>(producer: &mut P, engine: &mut crate::engine::Engine) {
     while let Some(rec) = producer.next() {
         match rec.bytes {
-            RecordBytes::FileRef { source_id, offset, len } => {
-                engine
-                    .indexes
-                    .line
-                    .locs
-                    .push(LineLoc { source_id, offset, len });
+            RecordBytes::FileRef {
+                source_id,
+                offset,
+                len,
+            } => {
+                engine.indexes.line.locs.push(LineLoc {
+                    source_id,
+                    offset,
+                    len,
+                });
             }
             RecordBytes::Owned(boxed) => {
                 let line_id = engine.indexes.line.locs.len() as u64;

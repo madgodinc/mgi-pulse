@@ -72,7 +72,10 @@ fn format_ts_utc(ts_micros: i64) -> String {
     let hh = day_secs / 3600;
     let mm = (day_secs % 3600) / 60;
     let ss = day_secs % 60;
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}", y, m, d, hh, mm, ss, micros)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}",
+        y, m, d, hh, mm, ss, micros
+    )
 }
 
 /// Inverse of indexer's `days_from_civil`.
@@ -144,9 +147,7 @@ pub fn render(
     } else {
         Vec::new()
     };
-    let raw_w = inner_w
-        .saturating_sub((auto_cols.len() * (COL_FIELD_W + 1)) as u16)
-        as usize;
+    let raw_w = inner_w.saturating_sub((auto_cols.len() * (COL_FIELD_W + 1)) as u16) as usize;
 
     let start = lower_bound(filtered_view, scroll_top);
     let visible = inner.height as usize;
@@ -231,7 +232,11 @@ pub fn render(
         }
         if raw_w > 0 {
             let raw = String::from_utf8_lossy(bytes);
-            let raw_trunc = if raw.len() > raw_w { &raw[..raw_w] } else { &raw[..] };
+            let raw_trunc = if raw.len() > raw_w {
+                &raw[..raw_w]
+            } else {
+                &raw[..]
+            };
             spans.push(Span::raw(" "));
             spans.push(Span::raw(raw_trunc.to_string()));
         }
