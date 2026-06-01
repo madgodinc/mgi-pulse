@@ -96,6 +96,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// Render one frame of the table. `area` is the rectangle assigned by the
 /// caller; `scroll_top` is the topmost visible `line_id`; `cursor` is the
 /// focused `line_id`. The pane truncates raw line bytes to fit the row width.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     f: &mut Frame,
     area: Rect,
@@ -142,7 +143,7 @@ pub fn render(
         engine
             .schema
             .as_ref()
-            .map(|s| s.auto_columns(limit.saturating_sub(1).max(0)))
+            .map(|s| s.auto_columns(limit.saturating_sub(1)))
             .unwrap_or_default()
     } else {
         Vec::new()
@@ -194,8 +195,8 @@ pub fn render(
     lines.push(Line::from(header_spans));
 
     let body_visible = visible.saturating_sub(1);
-    for i in start..start.saturating_add(body_visible).min(filtered_view.len()) {
-        let line_id = filtered_view[i];
+    let end = start.saturating_add(body_visible).min(filtered_view.len());
+    for &line_id in &filtered_view[start..end] {
         let sev = engine.indexes.severity.get(line_id).unwrap_or(0);
         let ts = engine.indexes.time.get(line_id).unwrap_or(TS_UNTIMED);
         let bytes = engine.line_bytes(line_id);

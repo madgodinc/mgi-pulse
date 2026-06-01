@@ -242,7 +242,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = (y - era * 400) as u64;
-    let doy = (153 * ((m + (if m > 2 { -3 } else { 9 })) as i64) + 2) / 5 + d - 1;
+    let doy = (153 * (m + (if m > 2 { -3 } else { 9 })) + 2) / 5 + d - 1;
     let doe = yoe * 365 + (yoe / 4) - (yoe / 100) + doy as u64;
     era * 146_097 + (doe as i64) - 719_468
 }

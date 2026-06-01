@@ -109,7 +109,7 @@ impl Engine {
     /// indexed)` records. Call once after `indexer::drain` is done.
     pub fn scan_schema(&mut self) {
         let total = self.indexes.len() as u64;
-        let window = (total.min(FILE_WARMUP_LINES as u64)) as u64;
+        let window = total.min(FILE_WARMUP_LINES as u64);
         let mut sb = SchemaBuilder::new();
         for line_id in 0..window {
             let bytes = self.line_bytes(line_id);
