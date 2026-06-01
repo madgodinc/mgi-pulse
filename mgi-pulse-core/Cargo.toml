@@ -1,0 +1,20 @@
+[package]
+name = "mgi-pulse-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core engine for mgi-pulse: TUI log navigator"
+
+[dependencies]
+memmap2.workspace = true
+memchr.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+smol_str.workspace = true

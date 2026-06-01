@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+members = [
+    "mgi-pulse-core",
+    "pulse-tui",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+authors = ["Mad God Inc"]
+license = "Apache-2.0"
+repository = "https://github.com/madgodinc/mgi-pulse"
+rust-version = "1.83"
+
+[workspace.dependencies]
+memmap2 = "0.9"
+memchr = "2.7"
+crossbeam-channel = "0.5"
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smol_str = "0.3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

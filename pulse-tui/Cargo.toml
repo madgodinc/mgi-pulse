@@ -1,0 +1,22 @@
+[package]
+name = "mgi-pulse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "TUI log navigator: not browse logs, navigate them"
+
+[[bin]]
+name = "mgi-pulse"
+path = "src/main.rs"
+
+[dependencies]
+mgi-pulse-core = { path = "../mgi-pulse-core" }
+ratatui.workspace = true
+crossterm.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
