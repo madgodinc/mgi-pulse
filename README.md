@@ -1,17 +1,19 @@
 # mgi-pulse
 
-A local-only TUI navigator for NDJSON logs. Not browse logs, navigate them.
+A local-only TUI navigator for structured logs. Not browse logs, navigate them.
 
 ## Why
 
 Most log tools either tail text (`less`, `tail -F`) or ship a pipeline (Loki,
 Vector, an OTEL collector). `mgi-pulse` sits in the gap: open one or many
-NDJSON files locally, get a typed table with severity tabs and a regex search,
-quit. No daemon, no Docker, no index on disk, no config file. The category
-Textualize's Toolong used to occupy is now empty; this is an attempt to fill
-it with a different organising idea — a log is not a text file to scroll, it
-is a structured event stream to navigate by time, by structure, and by
-severity.
+log files locally, get a typed table with severity tabs, a regex search, and
+a one-line query DSL, quit. No daemon, no Docker, no index on disk, no
+config file.
+
+A log is not a text file to scroll, it is a structured event stream to
+navigate by time, by structure, and by severity. `mgi-pulse` is built around
+that idea — and falls back gracefully to a `less`-style view when the input
+doesn't have structure to navigate.
 
 ## Install
 
@@ -29,91 +31,131 @@ cargo install --git https://github.com/madgodinc/mgi-pulse mgi-pulse
 ```
 
 macOS and Windows builds are CI-checked on each commit but pre-built
-binaries for those platforms are not shipped yet — build from source
-on those platforms for now.
+binaries for those platforms are not shipped yet — build from source on
+those platforms for now.
 
 ## Quickstart
 
 ```sh
-mgi-pulse app.log.ndjson            # open one file
-mgi-pulse a.ndjson b.ndjson         # k-way merge by timestamp
-tail -F live.log | mgi-pulse -      # stream from stdin
-mgi-pulse anything.log              # plain text works too — see "less-mode"
-mgi-pulse app.log.gz                # gzip auto-detected by magic bytes
-mgi-pulse app.log.zst               # zstd too
-mgi-pulse --format=logfmt go.log    # Go / Heroku-style key=value pairs
-mgi-pulse --format=edn clojure.edn  # Clojure {:key value} maps
-mgi-pulse --format=python app.log   # Python logging default format
+# Structured inputs (auto-detected for the first three)
+mgi-pulse app.log.ndjson                  # NDJSON
+mgi-pulse --format=logfmt go.log          # Go / Heroku key=value pairs
+mgi-pulse --format=edn clojure.edn        # Clojure {:key value} maps
+mgi-pulse --format=python app.log         # Python logging default format
+
+# Compressed files (gzip and zstd auto-detected by magic bytes)
+mgi-pulse app.log.gz
+mgi-pulse archive.log.zst
+
+# Multiple files merge by timestamp; stdin streams in real time
+mgi-pulse a.ndjson b.ndjson c.ndjson
+tail -F live.log | mgi-pulse -
+
+# Plain text falls into less-mode — line numbers, regex, navigation,
+# no fake columns
+mgi-pulse /var/log/something.log
 ```
 
-Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `f`
-opens a `field=value` filter, `t` jumps to a timestamp, `d` toggles the
-detail pane, `q` quits.
+Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `:`
+opens the query DSL, `f` opens a `field=value` filter, `t` jumps to a
+timestamp, `d` toggles the detail pane, `b` bookmarks the focused row,
+`q` quits.
+
+### Query DSL
+
+Press `:` to enter a one-line query. Compiles into the same filter
+machinery the table already uses, so it composes with the active tab
+and the legacy prompts:
+
+```text
+level=error
+level=error AND msg~/timeout/
+ts>=2026-06-01T12:00 AND ts<2026-06-01T13:00
+logger=my.app AND msg~/conn(ection)? lost/ AND level!=debug
+```
+
+Operators: `=`, `!=`, `~/regex/`, and `>`, `>=`, `<`, `<=` (the
+comparison ops only apply to `ts`). Compose with `AND`. Syntax errors
+are reported in the status bar before any scan.
 
 ### Less-mode (plain-text fallback)
 
-If the file has no parseable JSON structure (e.g. `log4j`/`logback`
+If the file has no parseable structure (e.g. `log4j`/`logback`
 defaults, raw stdout, Clojure println output), `mgi-pulse` collapses
 into a `less`-style view: line numbers + raw payload across the full
-width, no empty columns, no empty severity tabs. Regex search and
-cursor navigation still work. The detail pane (`d`) becomes a
-±5-line context viewer so multi-line stack traces read as a block.
+width, no empty columns, no empty severity tabs. Regex search, the
+DSL, and cursor navigation still work. The detail pane (`d`) shows
+±5 lines of context so multi-line stack traces read as a block.
 
-That makes it useful as a no-config `less` replacement even when the
-input is unstructured — just without the typed table you get on
-NDJSON.
+This makes the binary useful as a no-config `less` replacement even
+when the input is unstructured — you just lose the typed table.
 
-## Features (v0.1)
+## Features
 
-- mmap + memchr line indexer; serde-borrow parse of `ts` and `level` only.
-- k-way merge of multiple NDJSON files by timestamp.
-- Schema inference over the first 10k records, with auto-derived columns.
-- Filters: regex, `field=value`, severity (strict or `min+`), composed with AND.
-- Five tabs at startup: `All`, `Error`, `Warn`, `Info`, `Debug+Trace`.
-  `Ctrl-T` opens a fresh `All` tab; `Ctrl-W` closes the active one.
-- Timeline pane: overview histogram, severity-coloured stacked bars.
-- Detail pane: pretty-printed record under the cursor.
-- Status bar surfaces parse errors and untimed-record counts.
-- Single static binary, ~3 MB stripped, zero config files.
+- **Formats:** NDJSON, logfmt, EDN, Python `logging` default. Auto-detect for
+  the first three; pass `--format=python` for the fourth.
+- **Compression:** gzip and zstd — detected by magic bytes, not extension.
+- **Multi-line records:** stack traces and continuation lines fold into the
+  preceding record. Format-specific: Java/Python tracebacks merge into one
+  row, NDJSON keeps its one-record-per-line guarantee.
+- **Filters:** regex (whole line), `field=value` (typed projection), severity
+  (strict or `min+`), and the query DSL — all composed with AND.
+- **Severity tabs:** `All`, `Error`, `Warn`, `Info`, `Debug+Trace` at startup.
+  `Ctrl-T` opens a new tab, `Ctrl-W` closes one. Each tab keeps its own
+  filter stack, cursor, scroll, detail toggle, and bookmark list.
+- **Timeline pane:** overview histogram, severity-coloured bars, time range
+  labels.
+- **Detail pane:** pretty-printed record under the cursor; ±5-line context
+  view in less-mode.
+- **Bookmarks:** `b` toggles a bookmark on the focused row, `B` cycles
+  through them. A yellow star in the gutter marks bookmarked rows.
+- **Themes:** `--theme=dark|light|nocolor` (default dark). `nocolor` uses
+  only modifiers so the output stays readable when piped through `script` or
+  on terminals without ANSI colour.
+- **k-way merge** of multiple files by timestamp; line IDs become
+  time-sorted in the merged view.
+- **Schema inference** over the first 10k records produces auto-derived
+  columns. `R` rescans the schema over the visible window when the initial
+  10k turn out to be a boot banner.
+- Static binary, ~3.4 MB stripped, zero config files.
 
 ## Keyboard reference
 
 | Key | Action | Notes |
 |---|---|---|
-| `q` | Quit | Or `Ctrl-C`. |
-| `/` | Open regex search | `Enter` applies, `Esc` cancels. |
-| `f` | Open `field=value` filter | Composes with regex (AND). |
-| `t` | Jump to a timestamp | RFC3339 prefix, e.g. `2026-06-01T12:00`. |
-| `d` | Toggle detail pane | Pretty-printed JSON for NDJSON, ±5 lines of context for plain-text. |
-| `m` | Toggle severity strict / min-mode | `Warn` vs `Warn+`. |
-| `0` | Clear severity filter | On the active tab. |
-| `1` | Severity = Error+Fatal | Quick filter. |
-| `2` | Severity = Warn | Quick filter. |
-| `3` | Severity = Info | Quick filter. |
-| `4` | Severity = Debug+Trace | Quick filter. |
-| `Esc` | Clear all filters on this tab | Regex + field + severity. |
-| `Tab` | Next tab | `Shift-Tab` for previous. |
-| `Ctrl-T` | Open new tab | Always starts as `All`. |
-| `Ctrl-W` | Close active tab | Quits if it was the last. |
-| `Up` / `Down` | Move cursor | One row. |
-| `PageUp` / `PageDown` | Move cursor | 20 rows. |
+| `q` / `Ctrl-C` | Quit | |
+| `/` | Open regex search | `Enter` applies, `Esc` cancels |
+| `:` | Open query DSL | `level=error AND msg~/boom/` |
+| `f` | Open `field=value` filter | Composes with regex and DSL (AND) |
+| `t` | Jump to a timestamp | RFC3339 prefix, e.g. `2026-06-01T12:00` |
+| `d` | Toggle detail pane | Pretty-printed JSON; ±5 context in less-mode |
+| `m` | Toggle severity strict / min-mode | `Warn` vs `Warn+` |
+| `0`–`4` | Severity filter on active tab | `0` clears, `1` Error+Fatal, `2` Warn, `3` Info, `4` Debug+Trace |
+| `b` | Toggle bookmark on focused row | Yellow ★ in the gutter |
+| `B` | Jump to next bookmark | Wraps at the end |
+| `Esc` | Clear all filters on this tab | Regex + field + DSL + severity |
+| `R` | Rescan schema | Useful when the initial 10k were a boot banner |
+| `Tab` / `Shift-Tab` | Next / previous tab | |
+| `Ctrl-T` / `Ctrl-W` | Open new / close current tab | Last close quits |
+| `Up` / `Down` | Move cursor | One row |
+| `PageUp` / `PageDown` | Move cursor | 20 rows |
 | `g` / `G` | Jump to start / end | |
-| Mouse wheel | Scroll | One row per tick. Enabled by default. |
-| Mouse click | Click a tab to switch | Click in the tab bar only. |
+| Mouse wheel | Scroll | One row per tick |
+| Mouse click | Switch to a tab | In the tab bar only |
 
 ### Mouse capture and terminal selection
 
 Mouse capture is on by default so the wheel scrolls the table and you can
-click tabs. That intercepts text selection too — to copy a line, hold
-**Shift** while you drag the mouse and the terminal handles the selection
-directly. (Standard TUI convention, works in WezTerm, Alacritty,
-GNOME-Terminal, Konsole, iTerm2.) Pass `--no-mouse` to disable capture
-entirely if you need the unmodified terminal selection back — useful over
-SSH or with a copy-on-select setup.
+click tabs. That intercepts text selection too — hold **Shift** while you
+drag to let the terminal handle the selection directly (standard TUI
+convention; works in WezTerm, Alacritty, GNOME-Terminal, Konsole,
+iTerm2). Pass `--no-mouse` to disable capture entirely if you need the
+unmodified terminal selection back — useful over SSH or with a
+copy-on-select setup.
 
 ### Static files vs live files (mmap safety)
 
-`mgi-pulse` `mmap`s files for speed. **This is safe for static log
+`mgi-pulse` `mmap`s plain files for speed. **This is safe for static log
 snapshots but unsafe for files that another process may truncate or
 replace while you're viewing them** — reading past a truncated mmap
 region delivers SIGBUS to the process, killing it. That's a Unix
@@ -123,7 +165,7 @@ Two rules of thumb:
 
 - **Static / archived logs:** open them directly. `mgi-pulse app.log`,
   `mgi-pulse error.log.1`, `mgi-pulse 2026-06-01.ndjson` — all safe.
-- **Active / live logs:** **don't open them as files**. Pipe instead:
+- **Active / live logs:** pipe through `tail -F`:
 
   ```sh
   tail -F /var/log/app.log | mgi-pulse -
@@ -133,32 +175,37 @@ Two rules of thumb:
   uses owned buffers (no mmap) and is robust to whatever the writer
   does to the file underneath.
 
-If you can't tell whether the file is live, copy it first
-(`cp app.log /tmp/snap.ndjson && mgi-pulse /tmp/snap.ndjson`). v0.2 will
-ship a native follow mode (inotify / kqueue) so this footnote goes
-away.
+A native `--follow` mode is in the source tree (`io::tail::TailReader`)
+but waits on a background-indexer pass; the synchronous CLI version
+would block the UI on the tail's polling loop. v0.3 will land it.
 
 ## What it doesn't do (yet)
 
-- **Live follow.** No native `tail -F` or inotify. Pipe it in:
-  `tail -F file | mgi-pulse -`.
-- **Timeline scrubbing or zoom.** The histogram is a static overview; you can't
-  yet click or scroll along the time axis to jump.
-- **Other log formats.** NDJSON, logfmt, EDN, and Python `logging`
-  default format today (auto-detect for the first three; pass
-  `--format=python` for Python until detection lands). Plain text with
-  regex extraction, CEE/syslog, Apache/nginx access logs — not yet.
-- **Stack-trace folding.** Multi-line Go / Rust / Java tracebacks are not
-  collapsed into one row.
-- **Themes.** Colours are fixed (severity-coded).
+- **Native `--follow`.** See the section above; use `tail -F | -` for
+  now.
+- **Timeline scrubbing or zoom.** The histogram is a static overview;
+  you can't click or scroll along the time axis to jump.
+- **Other log formats beyond the four implemented.** CEE/syslog,
+  Apache/nginx access logs, plain text with regex extraction — not yet.
 - **Remote, multi-host, persistence.** Different product.
+
+## Custom field names
+
+If your log shape uses non-default names for the timestamp or level,
+override them:
+
+```sh
+mgi-pulse --time-field=@timestamp --level-field=severity_text app.log   # ECS
+mgi-pulse --time-field=@t app.log                                       # Serilog
+mgi-pulse --time-field=eventTime app.log                                # k8s audit
+```
 
 ## Status
 
-v0.1.0, single-developer hobby project. The on-disk format is none (nothing
-is persisted), but the key bindings and CLI surface are not stable yet —
-breaking changes between 0.1.x are possible. Feedback and bug reports are
-welcome on the issue tracker.
+Hobby project, single developer. The on-disk format is none (nothing is
+persisted), but the key bindings and CLI surface are not stable yet —
+breaking changes between minor versions are possible. Feedback and bug
+reports welcome on the [issue tracker](https://github.com/madgodinc/mgi-pulse/issues).
 
 ## License
 
@@ -166,8 +213,8 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- [ratatui](https://github.com/ratatui/ratatui) — the TUI rendering.
-- [memmap2](https://github.com/RazrFalcon/memmap2-rs) — mmap.
-- [serde](https://serde.rs/) / [serde_json](https://github.com/serde-rs/json)
-  — borrowed JSON parsing of `ts` and `level`.
-- [regex](https://github.com/rust-lang/regex) — search.
+- [ratatui](https://github.com/ratatui/ratatui) — TUI rendering
+- [memmap2](https://github.com/RazrFalcon/memmap2-rs) — mmap
+- [serde](https://serde.rs/) / [serde_json](https://github.com/serde-rs/json) — borrowed JSON parsing
+- [regex](https://github.com/rust-lang/regex) — search
+- [flate2](https://github.com/rust-lang/flate2-rs) / [zstd](https://github.com/gyscos/zstd-rs) — decompression
