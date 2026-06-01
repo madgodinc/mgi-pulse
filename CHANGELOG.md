@@ -5,6 +5,100 @@ All notable changes to mgi-pulse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-01
+
+Multi-format pass. NDJSON-only became NDJSON + logfmt + EDN + Python,
+plus compressed input, multi-line records, themes, bookmarks, and a
+one-line query DSL. Same binary, ~3.4 MB stripped (was 3.0 MB before
+the decompressors landed).
+
+### Added
+
+- **Format dispatch.** `LogFormat` enum per source, with auto-detect
+  by content for the first three formats. `--format=ndjson|logfmt|edn|python`
+  forces a specific parser; unknown values fail with a clear error.
+- **logfmt parser.** Go / Heroku `key=value key="quoted"` lines, with
+  quoted-string escapes. `LogfmtPairs` iterator yields borrowed slices
+  for the common unescaped case.
+- **EDN parser.** Clojure `{:key value}` records including namespaced
+  keywords (`:log/ts`), `#inst` and `#uuid` tagged literals, and
+  nested-map skip. Closes [#1](https://github.com/madgodinc/mgi-pulse/issues/1).
+- **Python parser.** `logging.basicConfig()` default format, including
+  the comma-millisecond timestamp quirk (PEP 282). Continuation rule
+  is non-digit-first-byte so tracebacks fold even when they don't start
+  with whitespace.
+- **gzip and zstd input.** Detected by magic bytes (not extension);
+  decompression is stream-mode so a 6-GB gzip never has to fit in RAM
+  uncompressed.
+- **Multi-line records.** `MultiLineProducer` wraps any producer and
+  folds continuation lines into the preceding record. Format-aware
+  via `LogFormat::is_continuation`. Contiguous file-backed continuations
+  stay zero-copy through extended-length FileRefs.
+- **Query DSL.** Press `:` to enter a one-line expression that compiles
+  into the same `AndPredicate` machinery the table filters already
+  use. Operators: `=`, `!=`, `~/regex/`, `>`, `>=`, `<`, `<=`. AND
+  composition. Time-prefix padding (`ts>2026` works).
+- **`FieldCache` / per-record parse-once.** Multi-field predicates
+  (regex + field-equals + DSL clauses) share one parse pass per record.
+- **Bookmarks.** `b` toggles, `B` cycles. Per-tab, yellow `★` in the
+  gutter. Survives filter changes.
+- **Themes.** `--theme=dark|light|nocolor` (or `MGI_PULSE_THEME` env
+  var). `nocolor` uses only modifiers so output stays readable through
+  `script` or on terminals without ANSI colour.
+- **`R` schema rescan.** Re-derives auto-columns over the middle of
+  the current filtered view. Useful when the initial 10k were a boot
+  banner with a different shape than the steady-state log.
+- **CLI overrides.** `--time-field=@timestamp`, `--level-field=severity_text`,
+  `--columns=N` for non-default schemas.
+- **`--no-mouse`.** Disable the default mouse capture for terminals
+  where Shift+drag selection isn't enough.
+- **Tail infrastructure.** `io::tail::TailReader` implements blocking
+  `BufRead` over a file with inode-based rotation detection. Behind
+  `--follow` in the CLI, but the synchronous indexer can't open the
+  UI in tail mode yet; the flag exits with a pointer to the
+  `tail -F | mgi-pulse -` alternative. Native follow lands when a
+  background indexer arrives in 0.3.
+
+### Improved
+
+- **Histogram cache key** now `(generation, bars)` instead of
+  `(filtered_view.len(), bars)`. Closes a real correctness bug where
+  two different predicate sets that happened to keep the same record
+  count would render each other's histogram.
+- **Owned stream bytes** moved from `HashMap<u64, Box<[u8]>>` to a
+  dense `Vec<Box<[u8]>>` indexed by `line_id - stream_base`. Drops
+  the hash-lookup overhead on the predicate hot path. Files don't
+  touch the storage at all (saves ~176 MB on the 11M-record bench).
+- **Less-mode threshold** is now strict majority (`timed*2 > total`)
+  instead of "any timed record at all". A stray ISO-shaped line in a
+  plain-text log no longer flips the whole UI into structured mode.
+- **DetailPane long-line cap** at 256 KB with a `… +Nk more` marker.
+  A 200 MB serialized record on one line no longer wedges the
+  renderer.
+- **mouse-click tab switching.** Click a tab in the tab bar to jump.
+- **interaction integration tests.** `pulse-tui/tests/cli.rs` runs the
+  real binary against golden fixtures (logfmt, EDN, structured NDJSON,
+  ECS-shaped, plain-text, gzip round-trip, theme accept/reject).
+
+### Performance
+
+End-to-end index of the 2 GB / 11 M-record synthetic NDJSON fixture is
+unchanged at 2.8-2.9 s on the same dev box (i5-12400F). The format
+dispatch indirection didn't cost a measurable cycle in the single-format
+case; the FieldCache pays off when two or more predicates touch the
+same field on the same record.
+
+Binary grew from 3.0 MB to 3.4 MB stripped, almost entirely from
+flate2 + zstd. Memory footprint of the index is down by ~30 % on the
+file-only path thanks to the dense stream storage rework.
+
+### Tests
+
+125 total (up from 44 in 0.1.0). Coverage spans every new parser
+module, the format-dispatch fallback paths, the cache regression test
+from the V01_REVIEW round 1 pass, and a small integration suite that
+runs the real binary against golden fixtures.
+
 ## [0.1.0] - 2026-06-01
 
 First public release. Single-source and merged NDJSON navigation with
@@ -63,4 +157,5 @@ Measured on an i5-12400F, 48 GB RAM, ext4 (see
 - Pre-built binaries: Linux musl only at release time. macOS and Windows are
   CI-checked but not shipped.
 
+[0.2.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.1.0

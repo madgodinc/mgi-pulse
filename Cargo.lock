@@ -617,7 +617,7 @@ dependencies = [
 
 [[package]]
 name = "mgi-pulse"
-version = "0.1.0-dev"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "mgi-pulse-core"
-version = "0.1.0-dev"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -732,7 +732,7 @@ dependencies = [
 
 [[package]]
 name = "parse-bench"
-version = "0.1.0-dev"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "memchr",

@@ -20,7 +20,7 @@ doesn't have structure to navigate.
 **Pre-built Linux x86_64 binary** (musl-static, no runtime deps):
 
 ```sh
-curl -L https://github.com/madgodinc/mgi-pulse/releases/latest/download/mgi-pulse-v0.1.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
+curl -L https://github.com/madgodinc/mgi-pulse/releases/latest/download/mgi-pulse-v0.2.0-x86_64-unknown-linux-musl.tar.gz | tar -xz
 ./mgi-pulse --help
 ```
 
