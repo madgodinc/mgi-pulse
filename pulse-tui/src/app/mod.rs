@@ -82,6 +82,9 @@ pub enum Input {
     /// DSL query — compiled into an AndPredicate. Backed by
     /// `engine::dsl::compile`.
     Dsl(String),
+    /// Save the active view's filtered records to a file. The buffer
+    /// holds the user-typed path; Enter writes, Esc cancels.
+    Save(String),
 }
 
 /// One tab's worth of state. Everything that can differ between tabs lives
@@ -735,6 +738,37 @@ enum ZoomDir {
     Out,
 }
 
+/// Write the active view's filtered records to `path`. One record per
+/// line, newline-terminated. Best-effort: any I/O failure surfaces in
+/// the status bar and the UI keeps running.
+fn save_filtered_view(app: &mut App, path: &str) {
+    let path = path.trim();
+    if path.is_empty() {
+        app.views[app.active_tab].status_msg = "save: path is empty".to_string();
+        return;
+    }
+    let view = &app.views[app.active_tab];
+    let engine = &app.engine;
+    let n = view.filtered_view.len();
+    let result = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let f = std::fs::File::create(path)?;
+        let mut w = std::io::BufWriter::new(f);
+        for &line_id in &view.filtered_view {
+            let bytes = engine.line_bytes(line_id);
+            w.write_all(bytes)?;
+            w.write_all(b"\n")?;
+        }
+        w.flush()?;
+        Ok(())
+    })();
+    let v = &mut app.views[app.active_tab];
+    v.status_msg = match result {
+        Ok(()) => format!("saved {} records to {}", n, path),
+        Err(e) => format!("save failed: {}", e),
+    };
+}
+
 /// Pull every record currently sitting in the live channel into the
 /// engine. Caps at `LIVE_DRAIN_PER_TICK` to keep one ferocious burst
 /// from starving the UI redraw — anything left over picks up next
@@ -1116,6 +1150,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     Some(Input::Dsl(s)) => (":", s.as_str()),
                     Some(Input::Filter(s)) => ("f", s.as_str()),
                     Some(Input::JumpTime(s)) => ("t", s.as_str()),
+                    Some(Input::Save(s)) => ("save:", s.as_str()),
                     None => ("", ""),
                 };
                 if !prompt_label.is_empty() {
@@ -1274,11 +1309,17 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 let engine = &app.engine;
                                 app.views[app.active_tab].set_dsl(&raw, engine);
                             }
+                            (Input::Save(buf), KeyCode::Enter) => {
+                                let raw = buf.clone();
+                                app.input = None;
+                                save_filtered_view(app, &raw);
+                            }
                             (
                                 Input::Search(buf)
                                 | Input::Filter(buf)
                                 | Input::JumpTime(buf)
-                                | Input::Dsl(buf),
+                                | Input::Dsl(buf)
+                                | Input::Save(buf),
                                 KeyCode::Backspace,
                             ) => {
                                 buf.pop();
@@ -1287,7 +1328,8 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 Input::Search(buf)
                                 | Input::Filter(buf)
                                 | Input::JumpTime(buf)
-                                | Input::Dsl(buf),
+                                | Input::Dsl(buf)
+                                | Input::Save(buf),
                                 KeyCode::Char(c),
                             ) => {
                                 buf.push(c);
@@ -1330,6 +1372,12 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                             }
                             (KeyCode::Char('t'), _) if app.engine.has_timestamps() => {
                                 app.input = Some(Input::JumpTime(String::new()));
+                            }
+                            (KeyCode::Char('s'), _) => {
+                                // Save current filtered view to a file.
+                                // Prompt for the path; Enter writes, Esc
+                                // cancels.
+                                app.input = Some(Input::Save(String::new()));
                             }
                             (KeyCode::Char('d'), _) => {
                                 let v = app.active();
@@ -1630,6 +1678,71 @@ mod tests {
         assert_eq!(view.cursor, 7);
         assert!(view.jump_next_bookmark());
         assert_eq!(view.cursor, 1);
+    }
+
+    #[test]
+    fn save_filtered_view_writes_records() {
+        use std::io::Read;
+        // Build a tiny engine with three owned records, filter to two,
+        // then save.
+        let mut engine = Engine::new();
+        for (i, body) in [b"alpha".as_slice(), b"beta", b"gamma"].iter().enumerate() {
+            let line_id = i as u64;
+            engine.indexes.line.locs.push(
+                mgi_pulse_core::engine::indexes::LineLoc {
+                    source_id: 0,
+                    offset: 0,
+                    len: body.len() as u32,
+                },
+            );
+            engine.indexes.time.ts.push(i as i64 * 1_000_000);
+            engine.indexes.severity.levels.push(severity::INFO);
+            engine.push_owned(line_id, Box::from(*body));
+        }
+        let mut app = App::new_with_source(
+            engine,
+            "test".to_string(),
+            None,
+            crate::theme::Theme::Dark,
+            None,
+        );
+        // Keep only lines 0 and 2.
+        app.views[0].filtered_view = vec![0, 2];
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("mgi-pulse-save-test-{}.log", std::process::id()));
+        let path_str = path.to_str().unwrap().to_string();
+        super::save_filtered_view(&mut app, &path_str);
+
+        let mut buf = String::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_string(&mut buf)
+            .unwrap();
+        assert_eq!(buf, "alpha\ngamma\n");
+        let _ = std::fs::remove_file(&path);
+        // Status message confirms the save.
+        assert!(app.views[0].status_msg.contains("saved 2 records"));
+    }
+
+    #[test]
+    fn save_filtered_view_rejects_empty_path() {
+        let mut engine = Engine::new();
+        engine.indexes.line.locs.push(
+            mgi_pulse_core::engine::indexes::LineLoc { source_id: 0, offset: 0, len: 0 },
+        );
+        engine.indexes.time.ts.push(0);
+        engine.indexes.severity.levels.push(severity::INFO);
+        engine.push_owned(0, Box::from(&b""[..]));
+        let mut app = App::new_with_source(
+            engine,
+            "t".to_string(),
+            None,
+            crate::theme::Theme::Dark,
+            None,
+        );
+        super::save_filtered_view(&mut app, "  ");
+        assert!(app.views[0].status_msg.contains("empty"));
     }
 
     #[test]

@@ -169,6 +169,7 @@ when the input is unstructured — you just lose the typed table.
 | `:` | Open query DSL | `level=error AND msg~/boom/` |
 | `f` | Open `field=value` filter | Composes with regex and DSL (AND) |
 | `t` | Jump to a timestamp | RFC3339 prefix, e.g. `2026-06-01T12:00` |
+| `s` | Save filtered view to a file | Prompt for path; writes one record per line |
 | `<` / `>` | Move the timeline scrub cursor | First press activates scrub; Shift jumps 10 bins |
 | `+` / `-` | Zoom the timeline in / out | Halves / doubles the visible range around the cursor |
 | `Enter` | Apply scrub as a time-range filter | Single bin if no zoom, the full zoom window otherwise |

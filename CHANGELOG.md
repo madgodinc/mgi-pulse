@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Save filtered view to a file** with `s`. Opens a `save:` prompt;
+  Enter writes the current view's records to the given path
+  (one record per line, newline-terminated), Esc cancels. I/O
+  failures surface in the status bar without disturbing the UI.
 - **Generic regex-extraction format.** `--pattern='...'` (implies
   `--format=regex`) lets users open any plain-text log by supplying a
   named-capture regex. `ts`, `level`, and any other capture become
