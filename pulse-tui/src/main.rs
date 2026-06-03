@@ -98,6 +98,14 @@ struct Cli {
     /// or stdin.
     #[arg(short = 'f', long, default_value_t = false)]
     follow: bool,
+
+    /// Regex pattern for the generic regex-extraction format. Named
+    /// captures (`(?P<name>...)`) become fields the table and DSL
+    /// can read; `ts` is parsed as RFC3339 and `level` as a severity
+    /// name. Implies `--format=regex`. Example:
+    /// `--pattern='(?P<ts>\d{4}-\d{2}-\d{2}\s[\d:]+)\s+(?P<level>\w+)\s+(?P<msg>.*)'`
+    #[arg(long, value_name = "REGEX")]
+    pattern: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -149,8 +157,11 @@ fn run() -> Result<()> {
         Some("csv") => Some(LogFormat::Csv),
         Some("tsv") => Some(LogFormat::Tsv),
         Some("access") => Some(LogFormat::Access),
+        Some("logback") | Some("log4j") | Some("java") => Some(LogFormat::Logback),
+        Some("journalctl") | Some("journal") | Some("systemd") => Some(LogFormat::Journalctl),
+        Some("regex") => Some(LogFormat::Regex),
         Some(other) => anyhow::bail!(
-            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access",
+            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access, logback, journalctl, regex",
             other
         ),
     };
@@ -180,6 +191,24 @@ fn run() -> Result<()> {
     // worker thread can be spun up after the synchronous backfill but
     // before the UI loop starts. `None` for static runs.
     let mut pending_follow: Option<FollowPlan> = None;
+
+    // --pattern implies --format=regex; explicit --format=regex
+    // without a pattern is an error caught at compile time below.
+    let regex_pattern: Option<std::sync::Arc<regex::bytes::Regex>> = match cli.pattern.as_deref() {
+        Some(src) => match mgi_pulse_core::engine::parse_regex::compile_pattern(src) {
+            Ok(re) => Some(std::sync::Arc::new(re)),
+            Err(e) => anyhow::bail!("{}", e),
+        },
+        None => None,
+    };
+    if matches!(forced_format, Some(LogFormat::Regex)) && regex_pattern.is_none() {
+        anyhow::bail!("--format=regex requires --pattern='<regex with named captures>'");
+    }
+    let forced_format = if regex_pattern.is_some() {
+        Some(LogFormat::Regex)
+    } else {
+        forced_format
+    };
 
     // Pick the source format. Explicit --format wins; otherwise sniff
     // a small probe from the first file (no probe for stdin — we'd
@@ -248,6 +277,24 @@ fn run() -> Result<()> {
     // every record. The indexer ran before the header was known, so
     // this is the moment to fix that up. Stateless formats no-op.
     engine.capture_csv_headers();
+
+    // Regex format: attach the pattern to each source that has format
+    // `Regex`, then re-derive ts/level. For single-source pipelines
+    // the regex applies to source_id=0; merging across regex sources
+    // isn't supported in v0.x and would need a per-CLI-arg pattern.
+    if let Some(re) = regex_pattern.clone() {
+        let regex_sids: Vec<u32> = engine
+            .source_formats
+            .iter()
+            .enumerate()
+            .filter(|(_, &f)| f == LogFormat::Regex)
+            .map(|(sid, _)| sid as u32)
+            .collect();
+        for sid in regex_sids {
+            engine.set_source_regex(sid, re.clone());
+        }
+        engine.recompute_regex_ts_level();
+    }
 
     // Schema warmup: scan the first 10k records to derive auto-columns. This
     // is opportunistic — non-JSON or schema-poor inputs simply produce fewer

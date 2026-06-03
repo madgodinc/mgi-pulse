@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Generic regex-extraction format.** `--pattern='...'` (implies
+  `--format=regex`) lets users open any plain-text log by supplying a
+  named-capture regex. `ts`, `level`, and any other capture become
+  projectable fields the DSL and table can read. `ts` is parsed as
+  RFC3339 with prefix-padding (`(?P<ts>\d{4})` works), `level` is
+  mapped to a severity name. Lines that don't match land in the
+  untimed bucket. Per-source pattern stored in `Engine::source_regex`
+  (Arc-shared); `recompute_regex_ts_level` walks the index after
+  ingestion to fill `(ts, severity)` from the pattern. New
+  `FieldCache::with_regex` for predicate-side projection.
+- **Java logback / log4j2 default format.** `--format=logback`
+  (aliases: `log4j`, `java`). Parses the canonical Spring Boot /
+  log4j2 console pattern: `YYYY-MM-DD HH:MM:SS[.,]mmm LEVEL [thread]
+  logger - msg`. Stack-trace continuations (`\tat ...`, `Caused by:
+  ...`, `\t... 12 more`) fold into the previous record. Field
+  projection: `level`, `thread`, `logger`, `msg`, `ts`. Auto-detect
+  goes ahead of generic NDJSON/logfmt.
+- **systemd journalctl JSON format.** `--format=journalctl` (aliases:
+  `journal`, `systemd`). NDJSON under the hood but with
+  `__REALTIME_TIMESTAMP` (microseconds-since-epoch string) for time
+  and `PRIORITY` (syslog 0-7) for severity. Field aliases:
+  `msg` → `MESSAGE`, `host` → `_HOSTNAME`, `unit` → `_SYSTEMD_UNIT`,
+  `ident` → `SYSLOG_IDENTIFIER`. Auto-detect via
+  `__REALTIME_TIMESTAMP`/`PRIORITY` byte-scan, ahead of generic NDJSON.
+
+### Changed
+
+- **`looks_like_access` tightened.** The old heuristic ("opening `[`
+  after 3 SP-separated tokens") collided with logback's
+  `[thread-name]` block. Now requires the bracket contents to look
+  like an Apache date (`DD/MMM/YYYY:HH:MM:SS` shape — slashes plus
+  colons), eliminating the false-positive without changing the
+  positive-case behaviour.
+
+### Added (continued)
+
 - **Native `--follow` mode.** `mgi-pulse --follow app.log` backfills
   the existing file synchronously (same path as a static open), then
   hands off to a background worker that owns a `TailReader` seeked

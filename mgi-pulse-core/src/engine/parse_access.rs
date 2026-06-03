@@ -327,29 +327,28 @@ fn split_request(req: &[u8], key: &str) -> Option<String> {
 }
 
 /// Heuristic for `LogFormat::detect`. A line looks like access log if
-/// it starts with what looks like an IP / hostname, has two `-` or
-/// short tokens, and an `[...]` block early on.
+/// it has an `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` block — that specific
+/// shape is unique to Apache time format and won't collide with
+/// logback's `[thread-name]`.
 pub fn looks_like_access(line: &[u8]) -> bool {
-    // Find the first `[`; needs to appear in roughly the right spot
-    // (after at least three space-separated tokens).
-    let mut spaces = 0;
-    let mut i = 0;
-    while i < line.len() && i < 80 {
-        if line[i] == b' ' {
-            spaces += 1;
-        }
-        if line[i] == b'[' && spaces >= 3 {
-            // Look ahead for `]` within ~30 bytes — Apache timestamp
-            // is exactly 26 chars.
-            let end = (i + 32).min(line.len());
-            if line[i..end].iter().any(|&b| b == b']') {
-                return true;
-            }
-            return false;
-        }
-        i += 1;
-    }
-    false
+    // Find an opening `[`.
+    let open = match line.iter().position(|&b| b == b'[') {
+        Some(p) => p,
+        None => return false,
+    };
+    // Look ahead for `]` within ~30 bytes — Apache timestamp is exactly
+    // 26 chars including SP ±HHMM.
+    let end = (open + 32).min(line.len());
+    let close = match line[open + 1..end].iter().position(|&b| b == b']') {
+        Some(p) => open + 1 + p,
+        None => return false,
+    };
+    let inner = &line[open + 1..close];
+    // Apache-time shape: two slashes (DD/MMM/YYYY) and a colon
+    // (YYYY:HH). Logback's `[thread]` has neither.
+    let slashes = inner.iter().filter(|&&b| b == b'/').count();
+    let colons = inner.iter().filter(|&&b| b == b':').count();
+    slashes == 2 && colons >= 3
 }
 
 #[cfg(test)]

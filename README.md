@@ -114,13 +114,19 @@ when the input is unstructured — you just lose the typed table.
 ## Features
 
 - **Formats:** NDJSON, logfmt, EDN, Python `logging` default, syslog RFC 5424,
-  CSV / TSV, Apache / nginx access logs (Common + Combined). Pass
-  `--format=python|syslog|csv|tsv|access` to force; everything else
-  auto-detects from the first ~16 KiB. For CSV/TSV the first row is treated
-  as the column header — `ts` and `level` columns drive the timeline and
-  severity tabs, and any column is addressable by name in DSL queries (or
-  by position via `_N`). Access-log severity is synthesised from the HTTP
-  status code (5xx → error, 4xx → warn, 2xx/3xx → info).
+  CSV / TSV, Apache / nginx access logs (Common + Combined), Java logback /
+  log4j2, systemd `journalctl -o json`, plus a **generic regex-extraction**
+  for everything else. Auto-detect from the first ~16 KiB; force with
+  `--format=python|syslog|csv|tsv|access|logback|journalctl|regex`. For
+  CSV/TSV the first row is the column header. Access-log severity is
+  synthesised from the HTTP status code. Java stack traces fold into
+  the previous record. journalctl maps `PRIORITY` to severity and
+  `__REALTIME_TIMESTAMP` to time.
+- **Regex extraction:** `--pattern='(?P<ts>...)\s+(?P<level>...)\s+(?P<msg>.*)'`
+  turns any plain-text log into a structured stream. Named captures
+  become fields the DSL and the table can use. `ts` parses as RFC3339
+  (with prefix padding for short timestamps); `level` maps to a
+  severity name.
 - **Compression:** gzip and zstd — detected by magic bytes, not extension.
 - **Multi-line records:** stack traces and continuation lines fold into the
   preceding record. Format-specific: Java/Python tracebacks merge into one

@@ -52,6 +52,20 @@ pub enum LogFormat {
     /// (5xx → error, 4xx → warn, 2xx/3xx → info). Time format is the
     /// Apache `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` shape, not RFC3339.
     Access,
+    /// Java logback / log4j2 default console pattern: `YYYY-MM-DD
+    /// HH:MM:SS[.,]mmm LEVEL [thread] logger - msg`. Stack-trace
+    /// continuations (`\tat ...`, `Caused by: ...`) fold via the
+    /// "first byte is not a digit" rule.
+    Logback,
+    /// systemd `journalctl -o json` output. NDJSON under the hood,
+    /// but `__REALTIME_TIMESTAMP` (micros since epoch as a string)
+    /// and `PRIORITY` (syslog 0-7) replace the standard `ts` / `level`.
+    Journalctl,
+    /// Generic regex-extraction format. Per-source pattern is held in
+    /// `Engine::source_regex`; named captures `ts`, `level`, and any
+    /// other group become projectable fields. Lets users open any
+    /// plain-text log by supplying `--pattern='...'`.
+    Regex,
 }
 
 impl LogFormat {
@@ -87,6 +101,18 @@ impl LogFormat {
                 (TS_UNTIMED, severity::UNKNOWN)
             }
             LogFormat::Access => crate::engine::parse_access::ts_and_level(line, stats, fields),
+            LogFormat::Logback => crate::engine::parse_logback::ts_and_level(line, stats, fields),
+            LogFormat::Journalctl => {
+                crate::engine::parse_journalctl::ts_and_level(line, stats, fields)
+            }
+            // Regex needs a per-source pattern that doesn't reach this
+            // stateless entry point. Mark untimed/unknown on the
+            // indexer pass; `Engine::recompute_regex_ts_level` walks
+            // back over the records once the pattern is attached.
+            LogFormat::Regex => {
+                stats.untimed += 1;
+                (TS_UNTIMED, severity::UNKNOWN)
+            }
         }
     }
 
@@ -123,6 +149,17 @@ impl LogFormat {
             LogFormat::Access => {
                 crate::engine::parse_access::project_field(line, key).map(std::borrow::Cow::Owned)
             }
+            LogFormat::Logback => {
+                crate::engine::parse_logback::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
+            LogFormat::Journalctl => crate::engine::parse_journalctl::project_field_journal(
+                line, key,
+            )
+            .map(std::borrow::Cow::Owned),
+            // Regex projection needs the pattern; FieldCache::with_regex
+            // is the proper entry point. Returning None here lets
+            // unwired predicates fail closed.
+            LogFormat::Regex => None,
         }
     }
 
@@ -161,6 +198,15 @@ impl LogFormat {
             // request URL never contains a literal newline (mod_log
             // emits `\n` as an escape).
             LogFormat::Access => false,
+            LogFormat::Logback => crate::engine::parse_logback::is_continuation(line),
+            // Journalctl is one record per JSON line — same as NDJSON.
+            LogFormat::Journalctl => false,
+            // Regex format: any line that doesn't match the pattern
+            // could plausibly be a continuation (stack trace), but
+            // without the per-source pattern at this entry point we
+            // can't tell. Default to "no continuation"; future work
+            // could thread the pattern in.
+            LogFormat::Regex => false,
         }
     }
 
@@ -177,7 +223,10 @@ impl LogFormat {
             | LogFormat::Syslog
             | LogFormat::Csv
             | LogFormat::Tsv
-            | LogFormat::Access => severity::from_bytes(level.as_bytes()),
+            | LogFormat::Access
+            | LogFormat::Logback
+            | LogFormat::Journalctl
+            | LogFormat::Regex => severity::from_bytes(level.as_bytes()),
         }
     }
 
@@ -193,7 +242,10 @@ impl LogFormat {
             | LogFormat::Syslog
             | LogFormat::Csv
             | LogFormat::Tsv
-            | LogFormat::Access => parse_rfc3339_micros(s),
+            | LogFormat::Access
+            | LogFormat::Logback
+            | LogFormat::Journalctl
+            | LogFormat::Regex => parse_rfc3339_micros(s),
         }
     }
 
@@ -214,6 +266,8 @@ impl LogFormat {
         let mut csv_votes = 0;
         let mut tsv_votes = 0;
         let mut access_votes = 0;
+        let mut logback_votes = 0;
+        let mut journalctl_votes = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
@@ -233,6 +287,21 @@ impl LogFormat {
             // in the user-agent.
             if crate::engine::parse_access::looks_like_access(trimmed) {
                 access_votes += 1;
+                continue;
+            }
+            // Logback before NDJSON/logfmt because its signature is
+            // specific (`YYYY-MM-DD HH:MM:SS[.,]mmm LEVEL ...`) and
+            // there's no other digit-prefix format we collide with.
+            if crate::engine::parse_logback::looks_like_logback(trimmed) {
+                logback_votes += 1;
+                continue;
+            }
+            // journalctl before generic NDJSON — it IS JSON, but the
+            // `__REALTIME_TIMESTAMP` / `PRIORITY` signature is
+            // specific enough to claim before falling into the
+            // braces-counter for NDJSON.
+            if crate::engine::parse_journalctl::looks_like_journalctl(trimmed) {
+                journalctl_votes += 1;
                 continue;
             }
             if trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}') {
@@ -263,14 +332,27 @@ impl LogFormat {
             && syslog_votes > logfmt_votes
             && syslog_votes > edn_votes
             && syslog_votes > access_votes
+            && syslog_votes > logback_votes
         {
             LogFormat::Syslog
         } else if access_votes >= 2
             && access_votes > ndjson_votes
             && access_votes > logfmt_votes
             && access_votes > edn_votes
+            && access_votes > logback_votes
         {
             LogFormat::Access
+        } else if logback_votes >= 2
+            && logback_votes > ndjson_votes
+            && logback_votes > logfmt_votes
+            && logback_votes > edn_votes
+        {
+            LogFormat::Logback
+        } else if journalctl_votes >= 2
+            && journalctl_votes > ndjson_votes
+            && journalctl_votes > edn_votes
+        {
+            LogFormat::Journalctl
         } else if edn_votes > ndjson_votes && edn_votes > logfmt_votes && edn_votes >= 2 {
             LogFormat::Edn
         } else if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
@@ -380,6 +462,8 @@ pub struct FieldCache<'a> {
     /// (NDJSON, logfmt, EDN, Python, syslog) leave this `None`; they
     /// don't need it.
     headers: Option<&'a [String]>,
+    /// Optional regex pattern for `LogFormat::Regex` sources.
+    regex: Option<&'a regex::bytes::Regex>,
     cache: std::collections::HashMap<smol_str::SmolStr, Option<String>>,
 }
 
@@ -389,6 +473,7 @@ impl<'a> FieldCache<'a> {
             format,
             bytes,
             headers: None,
+            regex: None,
             cache: std::collections::HashMap::new(),
         }
     }
@@ -397,6 +482,13 @@ impl<'a> FieldCache<'a> {
     /// resolve named columns; other formats ignore it.
     pub fn with_headers(mut self, headers: &'a [String]) -> Self {
         self.headers = Some(headers);
+        self
+    }
+
+    /// Attach the per-source regex pattern. Required for
+    /// `LogFormat::Regex` field projection; ignored otherwise.
+    pub fn with_regex(mut self, regex: &'a regex::bytes::Regex) -> Self {
+        self.regex = Some(regex);
         self
     }
 
@@ -422,6 +514,9 @@ impl<'a> FieldCache<'a> {
                         key,
                     )
                 }),
+                LogFormat::Regex => self
+                    .regex
+                    .and_then(|re| crate::engine::parse_regex::project_field(self.bytes, re, key)),
                 _ => self.format.project_field(self.bytes, key).map(String::from),
             };
             self.cache.insert(smol.clone(), parsed);
@@ -552,6 +647,24 @@ mod tests {
             b"2026-06-01T12:00:01Z,error,host02,oops",
         ];
         assert_eq!(LogFormat::detect(&lines), LogFormat::Csv);
+    }
+
+    #[test]
+    fn detect_picks_journalctl_when_realtime_timestamp_present() {
+        let lines: Vec<&[u8]> = vec![
+            br#"{"__REALTIME_TIMESTAMP":"1717235400123456","PRIORITY":"6","MESSAGE":"a"}"#,
+            br#"{"__REALTIME_TIMESTAMP":"1717235401123456","PRIORITY":"3","MESSAGE":"b"}"#,
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Journalctl);
+    }
+
+    #[test]
+    fn detect_picks_logback_when_pattern_matches() {
+        let lines: Vec<&[u8]> = vec![
+            b"2026-06-01 12:00:00.123 INFO  [main] x.y.Z - hi",
+            b"2026-06-01 12:00:01.456 ERROR [main] x.y.Z - boom",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Logback);
     }
 
     #[test]

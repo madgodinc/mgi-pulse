@@ -20,8 +20,11 @@ pub mod parse;
 pub mod parse_access;
 pub mod parse_csv;
 pub mod parse_edn;
+pub mod parse_journalctl;
+pub mod parse_logback;
 pub mod parse_logfmt;
 pub mod parse_python;
+pub mod parse_regex;
 pub mod parse_syslog;
 pub mod predicate;
 pub mod query;
@@ -63,6 +66,11 @@ pub struct Engine {
     /// Captured at indexing time from the first record of each
     /// CSV/TSV source and never mutated again.
     pub source_headers: Vec<Option<Vec<String>>>,
+    /// Per-source compiled regex for `LogFormat::Regex` sources. `Arc`
+    /// because the same pattern is shared between indexer hot path
+    /// and the `FieldCache` predicate side; cloning the `Arc` is
+    /// cheap and avoids passing a borrowed reference everywhere.
+    pub source_regex: Vec<Option<std::sync::Arc<regex::bytes::Regex>>>,
     /// Frozen-after-warmup schema. None until `scan_schema` runs.
     pub schema: Option<LockedSchema>,
 }
@@ -76,8 +84,30 @@ impl Engine {
             stream_base: None,
             source_formats: Vec::new(),
             source_headers: Vec::new(),
+            source_regex: Vec::new(),
             schema: None,
         }
+    }
+
+    /// Attach a compiled regex pattern to a source. Required before
+    /// indexing if the source's `LogFormat` is `Regex`. Idempotent
+    /// (overwrites any previous binding for that `source_id`).
+    pub fn set_source_regex(
+        &mut self,
+        source_id: u32,
+        pattern: std::sync::Arc<regex::bytes::Regex>,
+    ) {
+        let idx = source_id as usize;
+        if self.source_regex.len() <= idx {
+            self.source_regex.resize(idx + 1, None);
+        }
+        self.source_regex[idx] = Some(pattern);
+    }
+
+    /// Look up the compiled regex for a source. `None` for stateless
+    /// formats or sources where the pattern hasn't been bound.
+    pub fn regex_of(&self, source_id: u32) -> Option<&std::sync::Arc<regex::bytes::Regex>> {
+        self.source_regex.get(source_id as usize).and_then(|p| p.as_ref())
     }
 
     /// Lookup the format of one source. Falls back to NDJSON if the
@@ -137,6 +167,40 @@ impl Engine {
             }
         }
         self.recompute_csv_ts_level();
+    }
+
+    /// Walk every record whose source is `LogFormat::Regex` and
+    /// re-derive `(ts, severity)` using the per-source pattern. The
+    /// indexer pass marked them all untimed because it ran before
+    /// the pattern was available. Counterpart of `capture_csv_headers`
+    /// for the regex format.
+    pub fn recompute_regex_ts_level(&mut self) {
+        for line_id in 0..self.indexes.line.locs.len() as u64 {
+            let loc = self.indexes.line.locs[line_id as usize];
+            let fmt = self.format_of(loc.source_id);
+            if fmt != LogFormat::Regex {
+                continue;
+            }
+            let Some(re) = self.regex_of(loc.source_id).cloned() else {
+                continue;
+            };
+            let bytes = self.line_bytes(line_id).to_vec();
+            let mut stats = crate::engine::parse::ParseStats::default();
+            let (ts, sev) = crate::engine::parse_regex::ts_and_level(
+                &bytes,
+                re.as_ref(),
+                &mut stats,
+                None,
+            );
+            self.indexes.time.ts[line_id as usize] = ts;
+            self.indexes.severity.levels[line_id as usize] = sev;
+            // Same fold-fix as CSV: subtract the indexer's earlier
+            // "untimed" mark first.
+            self.indexes.parse_stats.untimed -= 1;
+            self.indexes.parse_stats.untimed += stats.untimed;
+            self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
+            self.indexes.parse_stats.json_parse_errors += stats.json_parse_errors;
+        }
     }
 
     /// Walk every record whose source is CSV/TSV and re-parse its
