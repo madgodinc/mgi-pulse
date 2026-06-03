@@ -176,10 +176,14 @@ fn run() -> Result<()> {
     // for bookmark persistence; stdin / merged sources stay `None`.
     let mut single_source_path: Option<PathBuf> = None;
 
-    // For v0.1.x the format is either CLI-forced or NDJSON by default.
-    // Auto-detect lands in a later step once we have something to test it
-    // on besides synthetic NDJSON.
-    let fmt = forced_format.unwrap_or(LogFormat::Ndjson);
+    // Pick the source format. Explicit --format wins; otherwise sniff
+    // a small probe from the first file (no probe for stdin — we'd
+    // have to buffer and replay it). Probe size is bounded so a huge
+    // file doesn't load megabytes just to vote on its shape.
+    let fmt = match forced_format {
+        Some(f) => f,
+        None => detect_format_from_files(&cli.files).unwrap_or(LogFormat::Ndjson),
+    };
 
     if cli.files.is_empty() {
         source_label = "<stdin>".to_string();
@@ -280,6 +284,46 @@ fn run() -> Result<()> {
         single_source_path,
     );
     app::run(app, !cli.no_mouse)
+}
+
+/// Read a small probe from the first file and let `LogFormat::detect`
+/// vote on its shape. Returns `None` when the input is stdin-only, the
+/// file is empty, or none of the format signatures match.
+///
+/// Probe size: up to 16 KiB or 64 newline-terminated lines, whichever
+/// ends first. Anything bigger is unnecessary — the detect heuristic
+/// hits a stable verdict well before that, and we don't want a huge
+/// log to slow down `mgi-pulse` startup just to make a format guess.
+fn detect_format_from_files(files: &[PathBuf]) -> Option<LogFormat> {
+    let path = files.iter().find(|p| p.as_os_str() != "-")?;
+    let bytes = read_probe(path, 16 * 1024).ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    // Take up to 64 newline-terminated lines from the probe. Strip
+    // trailing CR for CRLF inputs.
+    let lines: Vec<&[u8]> = bytes
+        .split(|&b| b == b'\n')
+        .take(64)
+        .map(|l| match l.last() {
+            Some(&b'\r') => &l[..l.len() - 1],
+            _ => l,
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(LogFormat::detect(&lines))
+}
+
+fn read_probe(path: &PathBuf, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; max_bytes];
+    let n = f.read(&mut buf)?;
+    buf.truncate(n);
+    Ok(buf)
 }
 
 fn ingest_file(

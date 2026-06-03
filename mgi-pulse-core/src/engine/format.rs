@@ -195,6 +195,8 @@ impl LogFormat {
         let mut logfmt_votes = 0;
         let mut edn_votes = 0;
         let mut syslog_votes = 0;
+        let mut csv_votes = 0;
+        let mut tsv_votes = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
@@ -219,6 +221,15 @@ impl LogFormat {
             }
             if logfmt_signature(trimmed) {
                 logfmt_votes += 1;
+                continue;
+            }
+            // CSV/TSV last because their signature (≥2 delimiters
+            // outside quotes) is the loosest and would otherwise eat
+            // free-form text like "a, b, c is a list" as CSV.
+            match crate::engine::parse_csv::delim_vote(trimmed) {
+                Some(crate::engine::parse_csv::Delim::Comma) => csv_votes += 1,
+                Some(crate::engine::parse_csv::Delim::Tab) => tsv_votes += 1,
+                None => {}
             }
         }
         if syslog_votes >= 2
@@ -231,6 +242,12 @@ impl LogFormat {
             LogFormat::Edn
         } else if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
             LogFormat::Logfmt
+        } else if ndjson_votes >= 2 {
+            LogFormat::Ndjson
+        } else if tsv_votes >= 2 && tsv_votes > csv_votes {
+            LogFormat::Tsv
+        } else if csv_votes >= 2 {
+            LogFormat::Csv
         } else {
             LogFormat::Ndjson
         }
@@ -492,6 +509,26 @@ mod tests {
             b"<131>1 2026-06-01T12:00:01Z host app 1 - - oops",
         ];
         assert_eq!(LogFormat::detect(&lines), LogFormat::Syslog);
+    }
+
+    #[test]
+    fn detect_picks_csv_when_lines_have_commas() {
+        let lines: Vec<&[u8]> = vec![
+            b"ts,level,host,msg",
+            b"2026-06-01T12:00:00Z,info,host01,hi",
+            b"2026-06-01T12:00:01Z,error,host02,oops",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Csv);
+    }
+
+    #[test]
+    fn detect_picks_tsv_when_lines_have_tabs() {
+        let lines: Vec<&[u8]> = vec![
+            b"ts\tlevel\tmsg",
+            b"2026-06-01T12:00:00Z\tinfo\thello",
+            b"2026-06-01T12:00:01Z\terror\toops",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Tsv);
     }
 
     #[test]

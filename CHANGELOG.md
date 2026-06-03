@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Format auto-detect wired into the CLI.** Running `mgi-pulse foo.log`
+  without `--format` now reads a ~16 KiB probe (up to 64 lines) from
+  the first file, feeds it to `LogFormat::detect`, and uses the verdict.
+  Stdin still defaults to NDJSON — buffering and replaying the stream
+  to sniff its shape is a separate concern. The probe order in detect
+  is: syslog > NDJSON > EDN > logfmt > NDJSON-fallback > TSV > CSV.
+  CSV/TSV are tested last because their signature (≥2 delimiters
+  outside quotes) is the loosest and would otherwise eat free-form
+  prose with commas. Closes #12.
 - **CSV and TSV input.** `--format=csv` / `--format=tsv`. RFC 4180
   quoting (`""` escape inside `"`-quoted values, embedded delimiters
   honoured). First row treated as the column header — column names

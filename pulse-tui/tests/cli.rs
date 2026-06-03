@@ -140,9 +140,11 @@ fn logfmt_input_with_force_flag_parses_ts_and_severity() {
 }
 
 #[test]
-fn logfmt_without_flag_falls_into_less_mode() {
-    // Without --format=logfmt the parser treats every line as JSON,
-    // every parse fails, every record lands in less-mode.
+fn logfmt_without_flag_is_auto_detected() {
+    // Auto-detect: the logfmt fixture's `key=value` shape gets the
+    // logfmt vote, no --format needed. Previously this test asserted
+    // the opposite (every line a JSON parse failure) because the
+    // wire from LogFormat::detect to the CLI didn't exist yet.
     Command::cargo_bin("mgi-pulse")
         .unwrap()
         .arg("--dry-run")
@@ -150,7 +152,7 @@ fn logfmt_without_flag_falls_into_less_mode() {
         .assert()
         .success()
         .stdout(contains("indexed 5 records"))
-        .stdout(contains("json errors: 5"));
+        .stdout(contains("untimed: 0"));
 }
 
 #[test]
@@ -168,7 +170,9 @@ fn edn_input_with_force_flag_parses_clojure_records() {
 }
 
 #[test]
-fn edn_without_flag_falls_into_less_mode() {
+fn edn_without_flag_is_auto_detected() {
+    // EDN signature: `{:keyword value ...}` — the auto-detector picks
+    // it up from the first lines and parses every record cleanly.
     Command::cargo_bin("mgi-pulse")
         .unwrap()
         .arg("--dry-run")
@@ -176,9 +180,7 @@ fn edn_without_flag_falls_into_less_mode() {
         .assert()
         .success()
         .stdout(contains("indexed 4 records"))
-        // Without --format=edn the parser treats every line as JSON
-        // and bails on the keyword sigil immediately.
-        .stdout(contains("json errors: 4"));
+        .stdout(contains("untimed: 0"));
 }
 
 #[test]
