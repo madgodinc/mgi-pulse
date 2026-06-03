@@ -148,8 +148,9 @@ fn run() -> Result<()> {
         Some("syslog") => Some(LogFormat::Syslog),
         Some("csv") => Some(LogFormat::Csv),
         Some("tsv") => Some(LogFormat::Tsv),
+        Some("access") => Some(LogFormat::Access),
         Some(other) => anyhow::bail!(
-            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv",
+            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access",
             other
         ),
     };

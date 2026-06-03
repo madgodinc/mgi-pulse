@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Apache / nginx access log format** (Common + Combined Log Format).
+  `--format=access` parses the CLF `host - user [date] "request" status
+  bytes` shape and the Combined extension that adds `"referer"
+  "user_agent"`. Apache time format `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` is
+  converted to RFC3339 internally. Severity is synthesised from the
+  HTTP status code: 5xx → error, 4xx → warn, 2xx/3xx → info,
+  everything else → unknown. Auto-detect picks Access when the
+  `[date]`-after-3-tokens signature matches ≥2 lines. Field projection
+  exposes `ip`/`host`, `user`, `logname`, `request`, `method`, `uri`,
+  `protocol`, `status`, `bytes`, `referer`, `user_agent`, `level`.
+  Closes #4.
 - **Format auto-detect wired into the CLI.** Running `mgi-pulse foo.log`
   without `--format` now reads a ~16 KiB probe (up to 64 lines) from
   the first file, feeds it to `LogFormat::detect`, and uses the verdict.

@@ -46,6 +46,12 @@ pub enum LogFormat {
     /// Tab-separated values. Same parser as `Csv`, different
     /// delimiter.
     Tsv,
+    /// Apache / nginx access log: Common Log Format (CLF) and the
+    /// Combined extension with referer + user-agent. The line has no
+    /// native severity — we synthesize one from the HTTP status code
+    /// (5xx → error, 4xx → warn, 2xx/3xx → info). Time format is the
+    /// Apache `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` shape, not RFC3339.
+    Access,
 }
 
 impl LogFormat {
@@ -80,6 +86,7 @@ impl LogFormat {
                 stats.untimed += 1;
                 (TS_UNTIMED, severity::UNKNOWN)
             }
+            LogFormat::Access => crate::engine::parse_access::ts_and_level(line, stats, fields),
         }
     }
 
@@ -113,6 +120,9 @@ impl LogFormat {
             // None so unwired predicates fail closed rather than
             // silently using positional guesses.
             LogFormat::Csv | LogFormat::Tsv => None,
+            LogFormat::Access => {
+                crate::engine::parse_access::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
         }
     }
 
@@ -147,6 +157,10 @@ impl LogFormat {
             // that requires a stateful line splitter — out of scope
             // for v0.x. Documented in `parse_csv` module header.
             LogFormat::Csv | LogFormat::Tsv => false,
+            // Access log records are strictly one line each. The
+            // request URL never contains a literal newline (mod_log
+            // emits `\n` as an escape).
+            LogFormat::Access => false,
         }
     }
 
@@ -162,7 +176,8 @@ impl LogFormat {
             | LogFormat::Python
             | LogFormat::Syslog
             | LogFormat::Csv
-            | LogFormat::Tsv => severity::from_bytes(level.as_bytes()),
+            | LogFormat::Tsv
+            | LogFormat::Access => severity::from_bytes(level.as_bytes()),
         }
     }
 
@@ -177,7 +192,8 @@ impl LogFormat {
             | LogFormat::Python
             | LogFormat::Syslog
             | LogFormat::Csv
-            | LogFormat::Tsv => parse_rfc3339_micros(s),
+            | LogFormat::Tsv
+            | LogFormat::Access => parse_rfc3339_micros(s),
         }
     }
 
@@ -197,6 +213,7 @@ impl LogFormat {
         let mut syslog_votes = 0;
         let mut csv_votes = 0;
         let mut tsv_votes = 0;
+        let mut access_votes = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
@@ -207,6 +224,15 @@ impl LogFormat {
             // `key=value` shape that would fool logfmt.
             if crate::engine::parse_syslog::looks_like_syslog(trimmed) {
                 syslog_votes += 1;
+                continue;
+            }
+            // Access log signature next — `[DD/MMM/YYYY...]` after a
+            // few space-separated tokens. Specific enough not to
+            // collide with anything else, and we want it ahead of
+            // logfmt because access lines occasionally contain `=`
+            // in the user-agent.
+            if crate::engine::parse_access::looks_like_access(trimmed) {
+                access_votes += 1;
                 continue;
             }
             if trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}') {
@@ -236,8 +262,15 @@ impl LogFormat {
             && syslog_votes > ndjson_votes
             && syslog_votes > logfmt_votes
             && syslog_votes > edn_votes
+            && syslog_votes > access_votes
         {
             LogFormat::Syslog
+        } else if access_votes >= 2
+            && access_votes > ndjson_votes
+            && access_votes > logfmt_votes
+            && access_votes > edn_votes
+        {
+            LogFormat::Access
         } else if edn_votes > ndjson_votes && edn_votes > logfmt_votes && edn_votes >= 2 {
             LogFormat::Edn
         } else if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
@@ -519,6 +552,15 @@ mod tests {
             b"2026-06-01T12:00:01Z,error,host02,oops",
         ];
         assert_eq!(LogFormat::detect(&lines), LogFormat::Csv);
+    }
+
+    #[test]
+    fn detect_picks_access_when_lines_have_clf_signature() {
+        let lines: Vec<&[u8]> = vec![
+            br#"1.2.3.4 - - [01/Jun/2026:12:00:00 +0000] "GET / HTTP/1.1" 200 5"#,
+            br#"5.6.7.8 - - [01/Jun/2026:12:00:01 +0000] "POST /a HTTP/1.1" 201 0"#,
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Access);
     }
 
     #[test]

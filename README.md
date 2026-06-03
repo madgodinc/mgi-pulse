@@ -110,10 +110,13 @@ when the input is unstructured — you just lose the typed table.
 ## Features
 
 - **Formats:** NDJSON, logfmt, EDN, Python `logging` default, syslog RFC 5424,
-  CSV / TSV. Pass `--format=python|syslog|csv|tsv` to force; the first three
-  auto-detect. For CSV/TSV the first row is treated as the column header —
-  `ts` and `level` columns drive the timeline and severity tabs, and any
-  column is addressable by name in DSL queries (or by position via `_N`).
+  CSV / TSV, Apache / nginx access logs (Common + Combined). Pass
+  `--format=python|syslog|csv|tsv|access` to force; everything else
+  auto-detects from the first ~16 KiB. For CSV/TSV the first row is treated
+  as the column header — `ts` and `level` columns drive the timeline and
+  severity tabs, and any column is addressable by name in DSL queries (or
+  by position via `_N`). Access-log severity is synthesised from the HTTP
+  status code (5xx → error, 4xx → warn, 2xx/3xx → info).
 - **Compression:** gzip and zstd — detected by magic bytes, not extension.
 - **Multi-line records:** stack traces and continuation lines fold into the
   preceding record. Format-specific: Java/Python tracebacks merge into one
