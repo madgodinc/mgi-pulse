@@ -468,14 +468,19 @@ pub struct App {
     pub max_columns: Option<usize>,
     /// Active colour theme.
     pub theme: crate::theme::Theme,
+    /// Canonical path to the single source file, if applicable.
+    /// `None` for stdin, merged sources, anything without stable
+    /// per-process identity — bookmark persistence is skipped then.
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 impl App {
-    pub fn new(
+    pub fn new_with_source(
         engine: Engine,
         source_label: String,
         max_columns: Option<usize>,
         theme: crate::theme::Theme,
+        source_path: Option<std::path::PathBuf>,
     ) -> Self {
         // Default tab set: All, then one tab per severity bucket. Each is a
         // SeverityMinPredicate, so "Error" means error+fatal, "Warn" means
@@ -483,7 +488,7 @@ impl App {
         // Per-severity tabs only make sense when at least one record had a
         // parseable level. Plain-text logs (Clojure log4j defaults, raw
         // stdout) get only `All` — extra tabs would be empty and confusing.
-        let views = if engine.has_severity() {
+        let mut views = if engine.has_severity() {
             vec![
                 View::new_all(&engine),
                 View::new_with_severity(&engine, "Error", &[severity::ERROR, severity::FATAL]),
@@ -494,6 +499,37 @@ impl App {
         } else {
             vec![View::new_all(&engine)]
         };
+
+        // Restore persisted bookmarks for this source, if we have one
+        // and the sidecar matches (inode + non-shrunk size). Failures
+        // are non-fatal — the binary still opens, just without prior
+        // bookmarks.
+        if let Some(ref path) = source_path {
+            if let Some(sidecar_path) = crate::bookmarks_store::Sidecar::default_path() {
+                let mut sidecar = crate::bookmarks_store::Sidecar::load_or_empty(&sidecar_path);
+                let key = crate::bookmarks_store::canonical_key(path);
+                if let Some((inode, size)) = crate::bookmarks_store::source_identity(path) {
+                    if let Some(saved_tabs) = sidecar.restore(&key, inode, size) {
+                        for (i, saved) in saved_tabs.into_iter().enumerate() {
+                            if let Some(view) = views.get_mut(i) {
+                                // Filter out line_ids past the current
+                                // engine — defensive guard for cases
+                                // where size+inode matched but the file
+                                // is somehow shorter than the saved
+                                // line_ids' offsets imply.
+                                let n = view.filtered_view.len() as u64;
+                                let live: Vec<u64> = saved
+                                    .into_iter()
+                                    .filter(|&id| id < n)
+                                    .collect();
+                                view.bookmarks = live;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
             engine,
             source_label,
@@ -503,6 +539,31 @@ impl App {
             tab_hitboxes: Vec::new(),
             max_columns,
             theme,
+            source_path,
+        }
+    }
+
+    /// Flush bookmarks to the sidecar. Best-effort: any I/O error is
+    /// logged via tracing and swallowed so the UI teardown isn't
+    /// blocked by a write failure. Called once from `run()` after the
+    /// main loop exits.
+    pub fn flush_bookmarks(&self) {
+        let Some(ref path) = self.source_path else {
+            return;
+        };
+        let Some(sidecar_path) = crate::bookmarks_store::Sidecar::default_path() else {
+            return;
+        };
+        let Some((inode, size)) = crate::bookmarks_store::source_identity(path) else {
+            return;
+        };
+        let key = crate::bookmarks_store::canonical_key(path);
+        let tabs: Vec<Vec<u64>> = self.views.iter().map(|v| v.bookmarks.clone()).collect();
+
+        let mut sidecar = crate::bookmarks_store::Sidecar::load_or_empty(&sidecar_path);
+        sidecar.upsert(&key, inode, size, tabs, &crate::bookmarks_store::now_rfc3339());
+        if let Err(e) = sidecar.save(&sidecar_path) {
+            tracing::warn!(error = %e, "bookmark sidecar save failed");
         }
     }
 
@@ -561,6 +622,11 @@ pub fn run(mut app: App, mouse_capture: bool) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_loop(&mut terminal, &mut app);
+
+    // Persist bookmarks before the terminal goes back to normal. Any
+    // failure is logged by `flush_bookmarks` itself; we don't surface
+    // it to the user.
+    app.flush_bookmarks();
 
     let _ = crossterm::terminal::disable_raw_mode();
     if mouse_capture {

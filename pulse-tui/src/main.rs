@@ -7,6 +7,7 @@
 //! - `/regex` filter, `Esc` clears, arrow / page / g / G navigation.
 
 mod app;
+mod bookmarks_store;
 mod panes;
 mod theme;
 
@@ -168,6 +169,9 @@ fn run() -> Result<()> {
 
     let mut engine = Engine::new();
     let source_label: String;
+    // Path to the single underlying file, when there is one. Used only
+    // for bookmark persistence; stdin / merged sources stay `None`.
+    let mut single_source_path: Option<PathBuf> = None;
 
     // For v0.1.x the format is either CLI-forced or NDJSON by default.
     // Auto-detect lands in a later step once we have something to test it
@@ -207,6 +211,7 @@ fn run() -> Result<()> {
                 );
             } else {
                 source_label = path.display().to_string();
+                single_source_path = Some(path.clone());
                 ingest_file(path, &mut engine, fields.clone(), fmt)?;
             }
         } else {
@@ -259,7 +264,13 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let app = app::App::new(engine, source_label, cli.columns, theme);
+    let app = app::App::new_with_source(
+        engine,
+        source_label,
+        cli.columns,
+        theme,
+        single_source_path,
+    );
     app::run(app, !cli.no_mouse)
 }
 

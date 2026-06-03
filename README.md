@@ -126,6 +126,12 @@ when the input is unstructured — you just lose the typed table.
   view in less-mode.
 - **Bookmarks:** `b` toggles a bookmark on the focused row, `B` cycles
   through them. A yellow star in the gutter marks bookmarked rows.
+  For single-file sources, bookmarks persist between sessions via a
+  sidecar at `$XDG_DATA_HOME/mgi-pulse/bookmarks.json` (default
+  `~/.local/share/mgi-pulse/bookmarks.json`). The sidecar is keyed by
+  the file's inode + size; a rotated or truncated file drops its
+  saved bookmarks automatically. Stdin and merged sources skip
+  persistence — their bookmarks live only for the session.
 - **Themes:** `--theme=dark|light|nocolor` (default dark). `nocolor` uses
   only modifiers so the output stays readable when piped through `script` or
   on terminals without ANSI colour. `NO_COLOR=1`, `TERM=dumb`, and a

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Persistent bookmarks across sessions** for single-file sources.
+  Sidecar lives at `$XDG_DATA_HOME/mgi-pulse/bookmarks.json` (default
+  `~/.local/share/mgi-pulse/bookmarks.json`). Keyed by inode + size so
+  a rotated or truncated file drops its saved bookmarks automatically.
+  Stdin and merged sources skip persistence (no stable identity).
+  Flush happens once on clean quit; the in-memory bookmarks during the
+  session remain the source of truth. Capped at 256 sources with LRU
+  eviction. Closes #7.
 - **DSL boolean composition: `OR`, `NOT`, parentheses.** The parser is
   now a recursive-descent grammar with conventional precedence (`NOT`
   binds tightest, then `AND`, then `OR`; parens override). Closes #8.
