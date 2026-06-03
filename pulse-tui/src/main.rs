@@ -176,6 +176,10 @@ fn run() -> Result<()> {
     // Path to the single underlying file, when there is one. Used only
     // for bookmark persistence; stdin / merged sources stay `None`.
     let mut single_source_path: Option<PathBuf> = None;
+    // When `--follow` is in play, hold onto the parameters so the
+    // worker thread can be spun up after the synchronous backfill but
+    // before the UI loop starts. `None` for static runs.
+    let mut pending_follow: Option<FollowPlan> = None;
 
     // Pick the source format. Explicit --format wins; otherwise sniff
     // a small probe from the first file (no probe for stdin — we'd
@@ -206,17 +210,23 @@ fn run() -> Result<()> {
                 source_label = "<stdin>".to_string();
                 ingest_stdin(&mut engine, fields.clone(), fmt)?;
             } else if cli.follow {
-                // `--follow` opens the file with the new TailReader, but
-                // the indexer is synchronous in v0.2 — it blocks on the
-                // tail's poll loop and the UI never opens. The reader
-                // module is in the source so a future background-indexer
-                // step can wire it in; for now we tell the user how to
-                // get the live-tail effect without that work.
-                anyhow::bail!(
-                    "--follow requires a background indexer (planned for v0.3); for now use \
-                     `tail -F {} | mgi-pulse -` instead",
-                    path.display()
-                );
+                // Two-phase follow:
+                //   1. Synchronous backfill from disk so the UI opens
+                //      with every record that was already in the file.
+                //   2. A worker thread takes over with a `TailReader`
+                //      seeked to EOF and streams new lines through a
+                //      crossbeam channel into the engine on every UI
+                //      tick. The two phases are guaranteed not to
+                //      overlap because the worker only starts after
+                //      the sync drain finishes.
+                source_label = format!("{} (follow)", path.display());
+                single_source_path = Some(path.clone());
+                ingest_file(path, &mut engine, fields.clone(), fmt)?;
+                pending_follow = Some(FollowPlan {
+                    path: path.clone(),
+                    fields: fields.clone(),
+                    fmt,
+                });
             } else {
                 source_label = path.display().to_string();
                 single_source_path = Some(path.clone());
@@ -284,7 +294,79 @@ fn run() -> Result<()> {
         theme,
         single_source_path,
     );
+    // Wire the follow worker if requested. The channel buffer (8192)
+    // absorbs short read bursts so the worker doesn't block on a slow
+    // UI tick. Worker drops out on producer EOF (e.g. file truncated
+    // and rotation gave us an empty new file) — UI keeps showing the
+    // index built so far.
+    let app = if let Some(plan) = pending_follow {
+        let (tx, rx) = crossbeam_channel::bounded(8192);
+        spawn_follow_worker(plan, tx);
+        app.with_live(rx)
+    } else {
+        app
+    };
     app::run(app, !cli.no_mouse)
+}
+
+/// Parameters captured at parse time so a worker thread can re-open
+/// the source independently of the synchronous backfill.
+struct FollowPlan {
+    path: PathBuf,
+    fields: Option<FieldNames>,
+    fmt: LogFormat,
+}
+
+/// Spawn the worker thread that owns the `TailReader` and streams
+/// records through the channel. We give it a name so panics show up
+/// clearly in tracing; we don't join — the channel disconnect is the
+/// only shutdown signal the UI needs.
+fn spawn_follow_worker(
+    plan: FollowPlan,
+    tx: crossbeam_channel::Sender<mgi_pulse_core::engine::record::RawRecord>,
+) {
+    use mgi_pulse_core::io::tail::TailReader;
+    use mgi_pulse_core::io::RecordProducer;
+    use mgi_pulse_core::io::stream::StreamProducer;
+
+    std::thread::Builder::new()
+        .name("mgi-pulse-follow".into())
+        .spawn(move || {
+            let tail = match TailReader::open(&plan.path) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!(error = %e, path = %plan.path.display(),
+                        "follow worker: open failed");
+                    return;
+                }
+            };
+            // Source-id 0 matches the synchronous backfill — files
+            // index as source_id=0 in single-source runs.
+            let mut producer = StreamProducer::new(tail, 0);
+            if let Some(f) = plan.fields {
+                producer = producer.with_fields(f);
+            }
+            producer = producer.with_format(plan.fmt);
+            // Drain until the channel disconnects (UI quit) or the
+            // producer dies. TailReader::read blocks on EOF, so each
+            // iteration is "wait for the next line, ship it".
+            loop {
+                match producer.next() {
+                    Some(rec) => {
+                        if tx.send(rec).is_err() {
+                            // UI dropped the receiver — clean exit.
+                            return;
+                        }
+                    }
+                    None => {
+                        // Producer closed (e.g. file got removed and
+                        // not recreated). Nothing more we can do.
+                        return;
+                    }
+                }
+            }
+        })
+        .ok();
 }
 
 /// Read a small probe from the first file and let `LogFormat::detect`

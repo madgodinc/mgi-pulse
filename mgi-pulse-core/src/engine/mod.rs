@@ -238,6 +238,66 @@ impl Engine {
         self.owned_lines.push(bytes);
     }
 
+    /// Ingest one `RawRecord` directly into the engine, the same way
+    /// `indexer::drain` would but for a single record. Used by the
+    /// background follow worker that streams in records after the
+    /// initial synchronous indexing finishes. Returns the new
+    /// `line_id` of the inserted record.
+    ///
+    /// The caller is responsible for line ordering — owned records
+    /// must arrive in monotonic order per the `push_owned` invariant.
+    /// For `--follow` the worker is the single producer so this holds
+    /// trivially.
+    pub fn ingest_one(&mut self, rec: crate::engine::record::RawRecord) -> u64 {
+        use crate::engine::indexes::LineLoc;
+        use crate::engine::record::RecordBytes;
+        let line_id = self.indexes.line.locs.len() as u64;
+        match rec.bytes {
+            RecordBytes::FileRef {
+                source_id,
+                offset,
+                len,
+            } => {
+                self.indexes.line.locs.push(LineLoc {
+                    source_id,
+                    offset,
+                    len,
+                });
+            }
+            RecordBytes::Owned(boxed) => {
+                self.indexes.line.locs.push(LineLoc {
+                    source_id: rec.source_id,
+                    offset: 0,
+                    len: boxed.len() as u32,
+                });
+                self.push_owned(line_id, boxed);
+            }
+            RecordBytes::FileRefMulti { source_id, spans } => {
+                let mut joined: Vec<u8> = Vec::new();
+                if let Some(mmap) = self.mmaps.get(source_id as usize) {
+                    for (offset, len) in &spans {
+                        let start = *offset as usize;
+                        let end = start + *len as usize;
+                        if end <= mmap.len() {
+                            joined.extend_from_slice(&mmap[start..end]);
+                            joined.push(b'\n');
+                        }
+                    }
+                }
+                let total_len = joined.len() as u32;
+                self.indexes.line.locs.push(LineLoc {
+                    source_id,
+                    offset: 0,
+                    len: total_len,
+                });
+                self.push_owned(line_id, joined.into_boxed_slice());
+            }
+        }
+        self.indexes.time.ts.push(rec.ts_micros);
+        self.indexes.severity.levels.push(rec.severity);
+        line_id
+    }
+
     /// Build the locked schema by scanning the first `min(FILE_WARMUP_LINES,
     /// indexed)` records. Call once after `indexer::drain` is done.
     pub fn scan_schema(&mut self) {
@@ -321,5 +381,49 @@ impl Engine {
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::record::{severity, RawRecord, RecordBytes};
+
+    fn owned_rec(line_id: u64, ts: i64, sev: u8, bytes: &[u8]) -> RawRecord {
+        RawRecord {
+            source_id: 0,
+            line_id,
+            ts_micros: ts,
+            severity: sev,
+            bytes: RecordBytes::Owned(Box::from(bytes)),
+        }
+    }
+
+    #[test]
+    fn ingest_one_appends_and_returns_line_id() {
+        let mut e = Engine::new();
+        let id1 = e.ingest_one(owned_rec(0, 1_000_000, severity::INFO, b"a"));
+        let id2 = e.ingest_one(owned_rec(0, 2_000_000, severity::WARN, b"b"));
+        assert_eq!(id1, 0);
+        assert_eq!(id2, 1);
+        assert_eq!(e.indexes.len(), 2);
+        assert_eq!(e.line_bytes(0), b"a");
+        assert_eq!(e.line_bytes(1), b"b");
+        assert_eq!(e.indexes.time.ts, vec![1_000_000, 2_000_000]);
+        assert_eq!(
+            e.indexes.severity.levels,
+            vec![severity::INFO, severity::WARN]
+        );
+    }
+
+    #[test]
+    fn ingest_one_grows_existing_engine() {
+        // Seed with one record, then live-ingest a second.
+        let mut e = Engine::new();
+        e.ingest_one(owned_rec(0, 1_000_000, severity::INFO, b"seed"));
+        assert_eq!(e.indexes.len(), 1);
+        e.ingest_one(owned_rec(0, 2_000_000, severity::ERROR, b"live"));
+        assert_eq!(e.indexes.len(), 2);
+        assert_eq!(e.line_bytes(1), b"live");
     }
 }

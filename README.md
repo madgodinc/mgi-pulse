@@ -53,6 +53,10 @@ mgi-pulse archive.log.zst
 mgi-pulse a.ndjson b.ndjson c.ndjson
 tail -F live.log | mgi-pulse -
 
+# Native follow — backfill existing content, then track new lines
+# in a background thread. Inode-based rotation detection.
+mgi-pulse --follow live.log
+
 # Plain text falls into less-mode — line numbers, regex, navigation,
 # no fake columns
 mgi-pulse /var/log/something.log
@@ -209,17 +213,20 @@ Two rules of thumb:
   uses owned buffers (no mmap) and is robust to whatever the writer
   does to the file underneath.
 
-A native `--follow` mode is in the source tree (`io::tail::TailReader`)
-but waits on a background-indexer pass; the synchronous CLI version
-would block the UI on the tail's polling loop. v0.3 will land it.
+Native `--follow` is also available — `mgi-pulse --follow app.log`
+backfills the existing content synchronously, then a background
+worker keeps the index alive with every new line the file picks up.
+Inode-based rotation detection means `logrotate` doesn't kill the
+session.
 
 ## What it doesn't do (yet)
-
-- **Native `--follow`.** See the section above; use `tail -F | -` for
-  now.
 - **Plain-text regex extraction.** Non-structured logs (raw stdout,
   `log4j` defaults) fall into less-mode — the table shows the raw
   payload but doesn't synthesise typed fields from a regex template.
+- **Background indexing for huge files.** A 30 GB file still blocks
+  the UI during the initial index build. `--follow` does have a
+  background worker for live appends; the historical backfill is
+  still synchronous.
 - **Remote, multi-host, persistence.** Different product.
 
 ## Custom field names

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Native `--follow` mode.** `mgi-pulse --follow app.log` backfills
+  the existing file synchronously (same path as a static open), then
+  hands off to a background worker that owns a `TailReader` seeked
+  to EOF. The worker streams new records through a bounded
+  crossbeam channel; the UI loop drains the channel on every tick
+  and ingests records into the engine via the new `Engine::ingest_one`.
+  Filters re-evaluate against the growing index — the `+N live`
+  count surfaces in the status bar as records arrive. Inode-based
+  rotation detection is inherited from `TailReader`, so `logrotate`
+  doesn't kill the session. New `SendableProducer` marker trait
+  enforces the `Send` bound where worker code needs it. Closes #6
+  (covering the historical #2 merge: native follow). The huge-file
+  background-index acceptance criterion from #6 is intentionally
+  not addressed here — the historical backfill is still
+  synchronous; see new follow-up issue.
 - **Timeline scrub and zoom.** `<` / `>` move a scrub cursor across
   the histogram bins (Shift jumps 10), `+` / `-` zoom the visible
   range (halve / double, anchored on the cursor), `Enter` applies the

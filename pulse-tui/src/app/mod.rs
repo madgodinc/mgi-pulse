@@ -512,6 +512,17 @@ pub struct App {
     /// per-view because the histogram itself is per-view and the
     /// scrub cursor logically follows whichever histogram is visible.
     pub scrub: Option<ScrubState>,
+    /// Live-mode channel for native `--follow`. When present, the UI
+    /// loop drains this channel on every tick and ingests new records
+    /// into the engine. `None` for static sources (files, stdin EOF).
+    /// The sender lives on a worker thread; closing it (worker exit /
+    /// file gone) just stops new records — the UI keeps working with
+    /// what was indexed.
+    pub live_rx: Option<crossbeam_channel::Receiver<mgi_pulse_core::engine::record::RawRecord>>,
+    /// Count of records ingested via the live channel since the
+    /// initial backfill ended. Displayed in the status bar as a
+    /// `+N live` badge so the user sees the index growing.
+    pub live_appended: u64,
 }
 
 /// Ephemeral UI state for the timeline scrub. Lives only while the user
@@ -601,7 +612,21 @@ impl App {
             theme,
             source_path,
             scrub: None,
+            live_rx: None,
+            live_appended: 0,
         }
+    }
+
+    /// Attach a live channel to this app. The caller starts the worker
+    /// thread that owns the matching sender; the UI loop drains the
+    /// receiver each tick. Best to call before `run()` so the first
+    /// draw already sees the "live" status hint.
+    pub fn with_live(
+        mut self,
+        rx: crossbeam_channel::Receiver<mgi_pulse_core::engine::record::RawRecord>,
+    ) -> Self {
+        self.live_rx = Some(rx);
+        self
     }
 
     /// Flush bookmarks to the sidecar. Best-effort: any I/O error is
@@ -708,6 +733,68 @@ pub fn run(mut app: App, mouse_capture: bool) -> Result<()> {
 enum ZoomDir {
     In,
     Out,
+}
+
+/// Pull every record currently sitting in the live channel into the
+/// engine. Caps at `LIVE_DRAIN_PER_TICK` to keep one ferocious burst
+/// from starving the UI redraw — anything left over picks up next
+/// tick. Returns true when at least one record was ingested (so the
+/// caller can invalidate caches downstream).
+const LIVE_DRAIN_PER_TICK: usize = 4096;
+
+fn drain_live_channel(app: &mut App) -> bool {
+    let Some(rx) = &app.live_rx else { return false };
+    let mut took = 0usize;
+    let mut any = false;
+    loop {
+        if took >= LIVE_DRAIN_PER_TICK {
+            break;
+        }
+        match rx.try_recv() {
+            Ok(rec) => {
+                app.engine.ingest_one(rec);
+                app.live_appended += 1;
+                any = true;
+                took += 1;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                // Worker closed. Drop the receiver so subsequent ticks
+                // skip the channel work entirely; live_appended stays
+                // as the final tally.
+                app.live_rx = None;
+                break;
+            }
+        }
+    }
+    if any {
+        // New records changed the index — every view's filtered_view
+        // is now stale, and so is its histogram. Cheapest fix is to
+        // bump generation + clear cache. Filters re-evaluate against
+        // the grown index on the next render.
+        for v in &mut app.views {
+            v.histogram_cache = None;
+            v.generation = v.generation.wrapping_add(1);
+            // For "no filter" views (most common in follow mode) the
+            // filtered_view is just 0..len; rebuild it cheaply.
+            let total = app.engine.indexes.len() as u64;
+            let no_filter = v.regex_filter.is_none()
+                && v.field_filters.is_empty()
+                && v.severity_levels.is_empty()
+                && v.dsl_query.is_none()
+                && v.time_range.is_none();
+            if no_filter {
+                let old_len = v.filtered_view.len() as u64;
+                if total > old_len {
+                    v.filtered_view.extend(old_len..total);
+                }
+            } else {
+                // Filtered views need a real scan — defer to rebuild_view.
+                v.rebuild_view(&app.engine);
+            }
+        }
+    }
+    any
 }
 
 /// Bin count the scrub UI targets when there's no terminal width to
@@ -882,6 +969,12 @@ fn set_scrub_status(app: &mut App, zoom: Option<(i64, i64)>) {
 
 fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
+        // Drain whatever the live worker has produced since the last
+        // tick. Non-blocking — empty channel means no new records,
+        // disconnected channel means the worker exited (file gone,
+        // worker panic) and we stop pulling.
+        drain_live_channel(app);
+
         // Ensure the active view's histogram is built before the closure
         // takes an immutable borrow of app. Borrow gymnastics: split the
         // engine reference out so the view can take a `&mut` independently.

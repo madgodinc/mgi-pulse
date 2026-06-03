@@ -622,6 +622,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "crossbeam-channel",
  "crossterm",
  "flate2",
  "mgi-pulse-core",

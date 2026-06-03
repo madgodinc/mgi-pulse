@@ -21,10 +21,6 @@ pub mod tail;
 
 use crate::engine::record::RawRecord;
 
-/// Note: not `Send`. The M1 indexer is single-threaded; producers may hold
-/// `!Send` handles (e.g. `StdinLock`). When the indexer moves to a dedicated
-/// thread (M1.5 with merge), the trait gains the `Send` bound and producers
-/// will need to oblige.
 pub trait RecordProducer {
     /// Blocking pull of the next record. None = EOF (static) or stream closed.
     fn next(&mut self) -> Option<RawRecord>;
@@ -33,3 +29,11 @@ pub trait RecordProducer {
     /// File: false. Stdin/growing-tail: true.
     fn is_live(&self) -> bool;
 }
+
+/// Background-friendly producer. Implementors promise to be `Send` so
+/// they can be moved into a worker thread that ingests a live source
+/// (e.g. native `--follow` with a `TailReader`). Most existing
+/// producers already satisfy this — stdin's `StdinLock` is the
+/// notable exception and stays on the main thread.
+pub trait SendableProducer: RecordProducer + Send {}
+impl<T: RecordProducer + Send> SendableProducer for T {}
