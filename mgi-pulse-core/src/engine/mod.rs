@@ -17,6 +17,7 @@ pub mod histogram;
 pub mod indexer;
 pub mod indexes;
 pub mod parse;
+pub mod parse_csv;
 pub mod parse_edn;
 pub mod parse_logfmt;
 pub mod parse_python;
@@ -56,6 +57,11 @@ pub struct Engine {
     /// alongside it when streams join. Predicates look up
     /// `source_formats[source_id]` to dispatch parsing.
     pub source_formats: Vec<LogFormat>,
+    /// Per-source column headers for CSV/TSV sources. Stays `None` for
+    /// stateless formats (NDJSON, logfmt, EDN, Python, syslog).
+    /// Captured at indexing time from the first record of each
+    /// CSV/TSV source and never mutated again.
+    pub source_headers: Vec<Option<Vec<String>>>,
     /// Frozen-after-warmup schema. None until `scan_schema` runs.
     pub schema: Option<LockedSchema>,
 }
@@ -68,6 +74,7 @@ impl Engine {
             owned_lines: Vec::new(),
             stream_base: None,
             source_formats: Vec::new(),
+            source_headers: Vec::new(),
             schema: None,
         }
     }
@@ -79,6 +86,110 @@ impl Engine {
             .get(source_id as usize)
             .copied()
             .unwrap_or(LogFormat::Ndjson)
+    }
+
+    /// Look up the captured column headers for one source. Returns
+    /// `None` for stateless formats and for CSV/TSV sources whose
+    /// first row hasn't been parsed yet (i.e. before
+    /// `capture_csv_headers`).
+    pub fn headers_of(&self, source_id: u32) -> Option<&[String]> {
+        self.source_headers
+            .get(source_id as usize)
+            .and_then(|h| h.as_deref())
+    }
+
+    /// For every CSV/TSV source, parse the first record as the column
+    /// header and stash it in `source_headers`. Call once after
+    /// `indexer::drain` completes. The header line stays in the index
+    /// as record 0 — hiding it from the table view is a separate
+    /// concern (it would let predicates positional-address `_N`
+    /// shift their meaning otherwise).
+    pub fn capture_csv_headers(&mut self) {
+        // Resize the headers vec to match formats — fill missing slots
+        // with None so indexing by source_id is always safe.
+        if self.source_headers.len() < self.source_formats.len() {
+            self.source_headers
+                .resize(self.source_formats.len(), None);
+        }
+        // Find the first line_id from each CSV/TSV source. For
+        // single-source pipelines this is line_id=0; for merge we'd
+        // need a per-source scan, but k-way merge across CSV sources
+        // isn't a supported configuration today.
+        for (sid, fmt) in self.source_formats.iter().enumerate() {
+            let delim = match fmt {
+                LogFormat::Csv => crate::engine::parse_csv::Delim::Comma,
+                LogFormat::Tsv => crate::engine::parse_csv::Delim::Tab,
+                _ => continue,
+            };
+            // Take the first record whose loc.source_id == sid. Linear
+            // scan; single-source files exit on the first iteration.
+            let mut header_line: Option<Vec<u8>> = None;
+            for (line_id, loc) in self.indexes.line.locs.iter().enumerate() {
+                if loc.source_id as usize == sid {
+                    header_line = Some(self.line_bytes(line_id as u64).to_vec());
+                    break;
+                }
+            }
+            if let Some(bytes) = header_line {
+                let headers = crate::engine::parse_csv::split_record(&bytes, delim);
+                self.source_headers[sid] = Some(headers);
+            }
+        }
+        self.recompute_csv_ts_level();
+    }
+
+    /// Walk every record whose source is CSV/TSV and re-parse its
+    /// `(ts, severity)` using the now-known header. The indexer's
+    /// initial pass marked them all untimed because it ran before the
+    /// header was captured. Header row itself stays untimed/unknown.
+    fn recompute_csv_ts_level(&mut self) {
+        for line_id in 0..self.indexes.line.locs.len() as u64 {
+            let loc = self.indexes.line.locs[line_id as usize];
+            let fmt = self.format_of(loc.source_id);
+            let delim = match fmt {
+                LogFormat::Csv => crate::engine::parse_csv::Delim::Comma,
+                LogFormat::Tsv => crate::engine::parse_csv::Delim::Tab,
+                _ => continue,
+            };
+            // The header line itself stays untimed — it isn't data.
+            // For single-source it's line_id=0; for k-way merge (not
+            // yet supported on CSV) it would be the first record per
+            // source.
+            let is_header = self
+                .indexes
+                .line
+                .locs
+                .iter()
+                .position(|l| l.source_id == loc.source_id)
+                .map(|p| p as u64 == line_id)
+                .unwrap_or(false);
+            if is_header {
+                continue;
+            }
+            let Some(headers) = self.headers_of(loc.source_id) else {
+                continue;
+            };
+            let headers_owned: Vec<String> = headers.to_vec();
+            let bytes = self.line_bytes(line_id).to_vec();
+            let mut stats = crate::engine::parse::ParseStats::default();
+            let (ts, sev) = crate::engine::parse_csv::ts_and_level_with_header(
+                &bytes,
+                delim,
+                &headers_owned,
+                &mut stats,
+                None,
+            );
+            self.indexes.time.ts[line_id as usize] = ts;
+            self.indexes.severity.levels[line_id as usize] = sev;
+            // Fold the per-record stats into the global aggregate so
+            // the dry-run summary reflects post-CSV-wire numbers.
+            // Subtract the indexer's earlier "untimed" mark first to
+            // avoid double-counting (every CSV row got incremented in
+            // the first pass).
+            self.indexes.parse_stats.untimed -= 1;
+            self.indexes.parse_stats.untimed += stats.untimed;
+            self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
+        }
     }
 
     /// Resolve a single line's bytes. Returns the slice or `&[]` if the

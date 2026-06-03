@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **CSV and TSV input.** `--format=csv` / `--format=tsv`. RFC 4180
+  quoting (`""` escape inside `"`-quoted values, embedded delimiters
+  honoured). First row treated as the column header — column names
+  resolve to typed fields for predicates and the DSL. Falls back to
+  positional addressing via `_N` (1-based) when no header matches.
+  `Engine::capture_csv_headers` captures the header from the first
+  record per CSV/TSV source and re-derives `ts` / `level` for every
+  data row in a second pass. Closes #9.
 - **Syslog RFC 5424 format.** `--format=syslog` parses the standard
   `<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG`
   shape. PRI's lower 3 bits map to severity (0-2 → fatal, 3 → error,

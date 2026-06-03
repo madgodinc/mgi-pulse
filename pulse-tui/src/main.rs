@@ -146,8 +146,10 @@ fn run() -> Result<()> {
         Some("edn") => Some(LogFormat::Edn),
         Some("python") => Some(LogFormat::Python),
         Some("syslog") => Some(LogFormat::Syslog),
+        Some("csv") => Some(LogFormat::Csv),
+        Some("tsv") => Some(LogFormat::Tsv),
         Some(other) => anyhow::bail!(
-            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog",
+            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv",
             other
         ),
     };
@@ -226,6 +228,11 @@ fn run() -> Result<()> {
             ingest_merged(&cli.files, &mut engine, fields.clone(), fmt)?;
         }
     }
+
+    // CSV/TSV: capture per-source headers and re-derive ts/level for
+    // every record. The indexer ran before the header was known, so
+    // this is the moment to fix that up. Stateless formats no-op.
+    engine.capture_csv_headers();
 
     // Schema warmup: scan the first 10k records to derive auto-columns. This
     // is opportunistic — non-JSON or schema-poor inputs simply produce fewer

@@ -247,6 +247,23 @@ fn unknown_format_value_is_rejected() {
 }
 
 #[test]
+fn csv_with_header_indexes_ts_and_level() {
+    // data.csv has 4 lines: 1 header + 3 data rows. After
+    // capture_csv_headers the 3 data rows have their ts and level
+    // resolved by column name, so untimed should be exactly 1 (the
+    // header row itself).
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg("--format=csv")
+        .arg(fixture("data.csv"))
+        .assert()
+        .success()
+        .stdout(contains("indexed 4 records"))
+        .stdout(contains("untimed: 1"));
+}
+
+#[test]
 fn mostly_plain_minority_json_falls_into_less_mode() {
     // One JSON line out of seven → minority → has_timestamps() / has_severity()
     // both stay false → less-mode wins. The single JSON line still appears in

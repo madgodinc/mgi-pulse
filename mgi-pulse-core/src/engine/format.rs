@@ -12,7 +12,7 @@
 use crate::engine::parse::{
     parse_rfc3339_micros, ts_and_level, ts_and_level_named, FieldNames, ParseStats,
 };
-use crate::engine::record::severity;
+use crate::engine::record::{severity, TS_UNTIMED};
 
 /// Closed set of supported log formats. Adding a new format means
 /// extending this enum and the four `match` arms below.
@@ -38,6 +38,14 @@ pub enum LogFormat {
     /// 3 bits → engine severity). Structured-data blocks are exposed
     /// as flat `SD-ID.key` fields by `project_field`.
     Syslog,
+    /// Comma-separated values, RFC 4180. Header is captured once per
+    /// source and projection is by column name; `_N` (1-based)
+    /// projects the Nth column for headerless or oddly-named files.
+    /// Predicate-side access goes through `FieldCache::with_headers`.
+    Csv,
+    /// Tab-separated values. Same parser as `Csv`, different
+    /// delimiter.
+    Tsv,
 }
 
 impl LogFormat {
@@ -60,6 +68,18 @@ impl LogFormat {
             LogFormat::Edn => crate::engine::parse_edn::ts_and_level(line, stats, fields),
             LogFormat::Python => crate::engine::parse_python::ts_and_level(line, stats, fields),
             LogFormat::Syslog => crate::engine::parse_syslog::ts_and_level(line, stats, fields),
+            // CSV/TSV need a header to resolve `ts` / `level` columns
+            // by name. The indexer's parse path doesn't carry that
+            // here, so we leave records untimed unless field overrides
+            // happen to match positional column names like `_2`. The
+            // proper wire is via `Engine::source_headers` and an
+            // alternate entry point; until that's stitched in (see
+            // CSV-wire issue) hot-path indexing of CSV/TSV is purely
+            // arrival-ordered.
+            LogFormat::Csv | LogFormat::Tsv => {
+                stats.untimed += 1;
+                (TS_UNTIMED, severity::UNKNOWN)
+            }
         }
     }
 
@@ -86,6 +106,13 @@ impl LogFormat {
             LogFormat::Syslog => {
                 crate::engine::parse_syslog::project_field(line, key).map(std::borrow::Cow::Owned)
             }
+            // CSV/TSV need the per-source header which isn't reachable
+            // from this stateless entry point. Callers that have the
+            // header should go through `FieldCache::with_headers`
+            // (which knows the source) — falling through here returns
+            // None so unwired predicates fail closed rather than
+            // silently using positional guesses.
+            LogFormat::Csv | LogFormat::Tsv => None,
         }
     }
 
@@ -115,6 +142,11 @@ impl LogFormat {
             // folds into the previous one (covers multi-line MSG
             // payloads like embedded stack traces).
             LogFormat::Syslog => line.first() != Some(&b'<'),
+            // CSV/TSV are strictly one record per physical line. RFC
+            // 4180 allows newlines inside quoted values, but supporting
+            // that requires a stateful line splitter — out of scope
+            // for v0.x. Documented in `parse_csv` module header.
+            LogFormat::Csv | LogFormat::Tsv => false,
         }
     }
 
@@ -128,7 +160,9 @@ impl LogFormat {
             | LogFormat::Logfmt
             | LogFormat::Edn
             | LogFormat::Python
-            | LogFormat::Syslog => severity::from_bytes(level.as_bytes()),
+            | LogFormat::Syslog
+            | LogFormat::Csv
+            | LogFormat::Tsv => severity::from_bytes(level.as_bytes()),
         }
     }
 
@@ -141,7 +175,9 @@ impl LogFormat {
             | LogFormat::Logfmt
             | LogFormat::Edn
             | LogFormat::Python
-            | LogFormat::Syslog => parse_rfc3339_micros(s),
+            | LogFormat::Syslog
+            | LogFormat::Csv
+            | LogFormat::Tsv => parse_rfc3339_micros(s),
         }
     }
 
@@ -290,6 +326,10 @@ fn logfmt_signature(line: &[u8]) -> bool {
 pub struct FieldCache<'a> {
     format: LogFormat,
     bytes: &'a [u8],
+    /// Optional column headers for CSV/TSV sources. Stateless formats
+    /// (NDJSON, logfmt, EDN, Python, syslog) leave this `None`; they
+    /// don't need it.
+    headers: Option<&'a [String]>,
     cache: std::collections::HashMap<smol_str::SmolStr, Option<String>>,
 }
 
@@ -298,8 +338,16 @@ impl<'a> FieldCache<'a> {
         Self {
             format,
             bytes,
+            headers: None,
             cache: std::collections::HashMap::new(),
         }
+    }
+
+    /// Attach a CSV/TSV header list. Stateful formats look this up to
+    /// resolve named columns; other formats ignore it.
+    pub fn with_headers(mut self, headers: &'a [String]) -> Self {
+        self.headers = Some(headers);
+        self
     }
 
     /// Look up one field. The first call parses; subsequent calls hit the
@@ -307,7 +355,25 @@ impl<'a> FieldCache<'a> {
     pub fn get(&mut self, key: &str) -> Option<&str> {
         let smol = smol_str::SmolStr::new(key);
         if !self.cache.contains_key(&smol) {
-            let parsed = self.format.project_field(self.bytes, key).map(String::from);
+            let parsed = match self.format {
+                LogFormat::Csv => self.headers.and_then(|h| {
+                    crate::engine::parse_csv::project_field_with_header(
+                        self.bytes,
+                        crate::engine::parse_csv::Delim::Comma,
+                        h,
+                        key,
+                    )
+                }),
+                LogFormat::Tsv => self.headers.and_then(|h| {
+                    crate::engine::parse_csv::project_field_with_header(
+                        self.bytes,
+                        crate::engine::parse_csv::Delim::Tab,
+                        h,
+                        key,
+                    )
+                }),
+                _ => self.format.project_field(self.bytes, key).map(String::from),
+            };
             self.cache.insert(smol.clone(), parsed);
         }
         self.cache.get(&smol).unwrap().as_deref()

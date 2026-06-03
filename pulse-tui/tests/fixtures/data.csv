@@ -1,0 +1,4 @@
+ts,level,host,msg
+2026-06-01T12:00:00Z,info,host01,server started
+2026-06-01T12:00:01Z,error,host02,"timeout, retry"
+2026-06-01T12:00:02Z,warn,host01,slow query
