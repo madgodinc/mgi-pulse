@@ -627,6 +627,7 @@ dependencies = [
  "mgi-pulse-core",
  "predicates",
  "ratatui",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
