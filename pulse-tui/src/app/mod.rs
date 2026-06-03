@@ -1407,6 +1407,39 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 // each open (cheap single-pass scan).
                                 app.show_stats = !app.show_stats;
                             }
+                            (KeyCode::Char(']'), _) => {
+                                // Widen the auto-column cap by one.
+                                // If the cap is currently None, seed
+                                // it from the schema's column count.
+                                let seed = app
+                                    .engine
+                                    .schema
+                                    .as_ref()
+                                    .map(|s| s.ordered_fields.len())
+                                    .unwrap_or(8);
+                                let cur = app.max_columns.unwrap_or(seed);
+                                app.max_columns = Some(cur.saturating_add(1));
+                                let n = app.max_columns.unwrap();
+                                app.views[app.active_tab].status_msg =
+                                    format!("auto-columns cap: {}", n);
+                            }
+                            (KeyCode::Char('['), _) => {
+                                // Narrow the auto-column cap by one.
+                                // Hitting zero is meaningful — it
+                                // collapses the table to ts/level/raw
+                                // and is a quick way to reclaim width.
+                                let seed = app
+                                    .engine
+                                    .schema
+                                    .as_ref()
+                                    .map(|s| s.ordered_fields.len())
+                                    .unwrap_or(8);
+                                let cur = app.max_columns.unwrap_or(seed);
+                                let next = cur.saturating_sub(1);
+                                app.max_columns = Some(next);
+                                app.views[app.active_tab].status_msg =
+                                    format!("auto-columns cap: {}", next);
+                            }
                             (KeyCode::Char('d'), _) => {
                                 let v = app.active();
                                 v.detail_open = !v.detail_open;

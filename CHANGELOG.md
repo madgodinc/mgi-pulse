@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runtime auto-columns cap with `]` / `[`.** Widen / narrow the
+  visible auto-column count without restarting. The cap seeds from
+  the schema's column count on the first press and the status bar
+  shows the new value.
 - **Stats overlay with `?`.** Toggle a sidebar that summarises the
   current filtered view: total records, per-severity counts (only the
   non-zero levels are shown), untimed bucket, time span, and the
