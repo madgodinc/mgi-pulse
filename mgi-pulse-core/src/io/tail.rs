@@ -77,6 +77,23 @@ impl TailReader {
     ///   reading the fresh content. Without this branch the reader
     ///   would silently hang on EOF forever while new writes
     ///   accumulate at offsets below the stale cursor.
+    ///
+    /// ## Known edge case: rotation mid-line
+    ///
+    /// If a caller is using `BufRead::read_until` and a rotation
+    /// happens while a partial line sits in the caller's own scratch
+    /// buffer (no `\n` seen yet), the next record will be
+    /// `partial_old + first_line_new` glued together. The TailReader
+    /// itself drops its internal `BufReader` buffer on swap, but it
+    /// can't reach into the caller's scratch.
+    ///
+    /// In practice this requires the rotation to land within the
+    /// ~milliseconds between a writer flushing a partial line and
+    /// flushing the rest with `\n` — most rotation tools sync the
+    /// writer first, and `read_until` only returns at a line
+    /// boundary, so during the 500 ms poll interval the caller is
+    /// almost always either fully consumed or fully waiting. Living
+    /// with it.
     fn check_rotation(&mut self) -> io::Result<bool> {
         let new_meta = match std::fs::metadata(&self.path) {
             Ok(m) => m,
