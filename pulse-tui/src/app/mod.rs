@@ -20,6 +20,7 @@ use mgi_pulse_core::engine::histogram::Histogram;
 use mgi_pulse_core::engine::parse::parse_rfc3339_micros;
 use mgi_pulse_core::engine::predicate::{
     AndPredicate, FieldEqualsPredicate, Predicate, RegexBytesPredicate, SeverityInPredicate,
+    TimeRangePredicate,
 };
 use mgi_pulse_core::engine::record::{severity, TS_UNTIMED};
 use mgi_pulse_core::engine::{query, Engine};
@@ -92,6 +93,10 @@ pub struct View {
     pub scroll_top: u64,
     pub regex_filter: Option<String>,
     pub field_filters: Vec<(String, String)>,
+    /// Active time-range filter in micros, inclusive on both ends.
+    /// Applied via the scrub UI's Enter action; cleared on Esc.
+    /// Composes with the other filters through AND.
+    pub time_range: Option<(i64, i64)>,
     /// Last successfully-compiled DSL query, if any. Stored as the
     /// source string so the title and status bar can show it; the
     /// compiled predicate is rebuilt each `rebuild_view` call.
@@ -147,6 +152,7 @@ impl View {
             scroll_top: 0,
             regex_filter: None,
             field_filters: Vec::new(),
+            time_range: None,
             dsl_query: None,
             severity_levels: Vec::new(),
             severity_min_mode: false,
@@ -294,7 +300,8 @@ impl View {
         let has_filter = self.regex_filter.is_some()
             || !self.field_filters.is_empty()
             || !self.severity_levels.is_empty()
-            || self.dsl_query.is_some();
+            || self.dsl_query.is_some()
+            || self.time_range.is_some();
 
         if !has_filter {
             self.filtered_view = (0..engine.indexes.len() as u64).collect();
@@ -330,6 +337,14 @@ impl View {
                     }
                 }
             }
+            if let Some((lo, hi)) = self.time_range {
+                // Inclusive on both ends — the scrub UI picks a `[lo, hi]`
+                // window from histogram bins and Enter applies it. We
+                // compose as `ts >= lo AND ts <= hi` so records sitting
+                // exactly on the boundary stay in.
+                and.push(Box::new(TimeRangePredicate::at_or_after(lo)));
+                and.push(Box::new(TimeRangePredicate::at_or_before(hi)));
+            }
             let predicate: Box<dyn Predicate> = Box::new(and);
             let hits = query::scan(engine, predicate.as_ref());
             let mut parts: Vec<String> = Vec::new();
@@ -348,6 +363,16 @@ impl View {
             }
             if let Some(q) = &self.dsl_query {
                 parts.push(format!(":{}", q));
+            }
+            if let Some((lo, hi)) = self.time_range {
+                // Surfaced as `t[lo..hi]` in the status bar — short
+                // enough to fit and unambiguous about being a time
+                // bound, not a regex.
+                parts.push(format!(
+                    "t[{}..{}]",
+                    crate::panes::timeline::format_micros_short(lo),
+                    crate::panes::timeline::format_micros_short(hi)
+                ));
             }
             self.status_msg = format!(
                 "{}  {} matches of {}",
@@ -413,6 +438,7 @@ impl View {
         self.severity_levels.clear();
         self.severity_label.clear();
         self.dsl_query = None;
+        self.time_range = None;
         self.rebuild_view(engine);
     }
 
@@ -439,8 +465,15 @@ impl View {
 
     /// Get (and cache) the histogram for the timeline pane. Cache key is
     /// (generation, bars); see the field comment for why length is not part
-    /// of the key.
-    fn histogram(&mut self, engine: &Engine, bars: u16) -> &Histogram {
+    /// of the key. Zoom (Some range) bypasses the cache — the zoomed
+    /// histogram changes whenever the user widens/narrows, and caching
+    /// every zoom step would inflate the cache for no real win.
+    fn histogram(&mut self, engine: &Engine, bars: u16, zoom: Option<(i64, i64)>) -> &Histogram {
+        if let Some((lo, hi)) = zoom {
+            let h = Histogram::build_over_range(engine, &self.filtered_view, bars as usize, lo, hi);
+            self.histogram_cache = Some((self.generation, bars, h));
+            return &self.histogram_cache.as_ref().unwrap().2;
+        }
         let gen = self.generation;
         let needs_build = match &self.histogram_cache {
             Some((cached_gen, cached_w, _)) => *cached_gen != gen || *cached_w != bars,
@@ -472,6 +505,33 @@ pub struct App {
     /// `None` for stdin, merged sources, anything without stable
     /// per-process identity — bookmark persistence is skipped then.
     pub source_path: Option<std::path::PathBuf>,
+    /// Timeline scrub UI state. `None` when scrub is inactive (default).
+    /// First press of `<` or `>` activates it, Esc deactivates without
+    /// applying anything. Enter applies the current scrub selection as a
+    /// time-range filter on the active view. Per-app rather than
+    /// per-view because the histogram itself is per-view and the
+    /// scrub cursor logically follows whichever histogram is visible.
+    pub scrub: Option<ScrubState>,
+}
+
+/// Ephemeral UI state for the timeline scrub. Lives only while the user
+/// is navigating the histogram; never persisted to disk and never feeds
+/// the filter pipeline directly — that happens only on Enter, by
+/// projecting the scrub state onto `View::time_range`.
+#[derive(Debug, Clone)]
+pub struct ScrubState {
+    /// Selected bin index within the current `Histogram::bins`. Always
+    /// `< bins.len()`. When zoom is active the bins are re-computed
+    /// over the zoomed range, so the same `cursor_bin` value can mean
+    /// different absolute times across zoom transitions — that's
+    /// intentional; the cursor visually stays where the user put it.
+    pub cursor_bin: usize,
+    /// Optional sub-window inside the full time range. `None` = the
+    /// histogram covers the full `[engine.t_min, engine.t_max]`.
+    /// `Some((lo, hi))` = the histogram only shows `[lo, hi]`. Zoom
+    /// in halves the visible span around `cursor_bin`; zoom out
+    /// doubles it (capped at the full range).
+    pub zoom: Option<(i64, i64)>,
 }
 
 impl App {
@@ -540,6 +600,7 @@ impl App {
             max_columns,
             theme,
             source_path,
+            scrub: None,
         }
     }
 
@@ -644,6 +705,181 @@ pub fn run(mut app: App, mouse_capture: bool) -> Result<()> {
     result
 }
 
+enum ZoomDir {
+    In,
+    Out,
+}
+
+/// Bin count the scrub UI targets when there's no terminal width to
+/// consult (initial activation, before the next draw measures it).
+/// 80 is a safe default — the real bar count gets used on every
+/// subsequent press because the histogram cache has been rebuilt.
+const DEFAULT_SCRUB_BINS: usize = 80;
+
+fn current_histogram_bin_count(app: &App) -> usize {
+    app.views[app.active_tab]
+        .histogram_cache
+        .as_ref()
+        .map(|(_, _, h)| h.bins.len())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_SCRUB_BINS)
+}
+
+fn handle_scrub_move(app: &mut App, delta: i32) {
+    let bin_count = current_histogram_bin_count(app);
+    let initial = bin_count / 2;
+    let mut state = app.scrub.take().unwrap_or(ScrubState {
+        cursor_bin: initial,
+        zoom: None,
+    });
+    let new_pos = (state.cursor_bin as i32 + delta).clamp(0, bin_count.saturating_sub(1) as i32);
+    state.cursor_bin = new_pos as usize;
+    let zoom = state.zoom;
+    app.scrub = Some(state);
+    // Status hint shows current cursor time and any active zoom range.
+    set_scrub_status(app, zoom);
+}
+
+fn handle_scrub_zoom(app: &mut App, dir: ZoomDir) {
+    let view = &app.views[app.active_tab];
+    let Some((_, _, h)) = &view.histogram_cache else {
+        return;
+    };
+    let bin_count = h.bins.len().max(1);
+    let cur_bin = app
+        .scrub
+        .as_ref()
+        .map(|s| s.cursor_bin.min(bin_count - 1))
+        .unwrap_or(bin_count / 2);
+    // Anchor point in time = centre of the cursor's bin in the current
+    // view (zoomed or full).
+    let span = (h.t_max - h.t_min).max(1);
+    let bin_span = span / bin_count as i64;
+    let anchor = h.t_min + cur_bin as i64 * bin_span + bin_span / 2;
+
+    let (cur_lo, cur_hi) = match app.scrub.as_ref().and_then(|s| s.zoom) {
+        Some((lo, hi)) => (lo, hi),
+        None => (h.t_min, h.t_max.saturating_sub(1)),
+    };
+    let cur_span = (cur_hi - cur_lo).max(1);
+
+    let new_span = match dir {
+        ZoomDir::In => (cur_span / 2).max(1),
+        ZoomDir::Out => cur_span.saturating_mul(2),
+    };
+
+    // Engine-wide range — never zoom out past this.
+    let full_span = {
+        let ts = &app.engine.indexes.time.ts;
+        let mut lo = i64::MAX;
+        let mut hi = i64::MIN;
+        for &t in ts.iter() {
+            if t == TS_UNTIMED {
+                continue;
+            }
+            if t < lo {
+                lo = t;
+            }
+            if t > hi {
+                hi = t;
+            }
+        }
+        if lo == i64::MAX {
+            return;
+        }
+        (lo, hi)
+    };
+    let (full_lo, full_hi) = full_span;
+    let new_span = new_span.min(full_hi - full_lo);
+
+    let half = new_span / 2;
+    let mut new_lo = anchor.saturating_sub(half);
+    let mut new_hi = anchor.saturating_add(new_span - half);
+    // Clamp to the full engine range and re-anchor on overflow so the
+    // span stays the requested length when the cursor is near an edge.
+    if new_lo < full_lo {
+        let shift = full_lo - new_lo;
+        new_lo = full_lo;
+        new_hi = (new_hi + shift).min(full_hi);
+    }
+    if new_hi > full_hi {
+        let shift = new_hi - full_hi;
+        new_hi = full_hi;
+        new_lo = (new_lo - shift).max(full_lo);
+    }
+
+    let new_zoom = if new_lo <= full_lo && new_hi >= full_hi {
+        None // back to full range — drop the zoom
+    } else {
+        Some((new_lo, new_hi))
+    };
+
+    if let Some(state) = app.scrub.as_mut() {
+        state.zoom = new_zoom;
+    } else {
+        app.scrub = Some(ScrubState {
+            cursor_bin: cur_bin,
+            zoom: new_zoom,
+        });
+    }
+    // Histogram cache built against the old zoom — must invalidate so
+    // the next draw rebuilds against the new window.
+    app.views[app.active_tab].histogram_cache = None;
+    set_scrub_status(app, new_zoom);
+}
+
+fn handle_scrub_apply(app: &mut App) {
+    let view = &app.views[app.active_tab];
+    let Some((_, _, h)) = &view.histogram_cache else {
+        return;
+    };
+    let scrub = match &app.scrub {
+        Some(s) => s.clone(),
+        None => return,
+    };
+    let bin_count = h.bins.len().max(1);
+    let cur_bin = scrub.cursor_bin.min(bin_count - 1);
+    let span = (h.t_max - h.t_min).max(1);
+    let bin_span = (span / bin_count as i64).max(1);
+    // Resolved range:
+    // - if a zoom is active, apply the full zoom window — that's what
+    //   the user is looking at and the cursor would be a confusing
+    //   pixel-precision pick;
+    // - if no zoom, apply just the cursor bin: span = bin_span around
+    //   the cursor's bin centre. Inclusive bounds.
+    let (lo, hi) = if let Some((zlo, zhi)) = scrub.zoom {
+        (zlo, zhi)
+    } else {
+        let centre = h.t_min + cur_bin as i64 * bin_span;
+        (centre, centre + bin_span.saturating_sub(1))
+    };
+    let engine = &app.engine;
+    let v = &mut app.views[app.active_tab];
+    v.time_range = Some((lo, hi));
+    v.rebuild_view(engine);
+    // Scrub ends after applying — the user can press `<`/`>` again to
+    // start a new selection.
+    app.scrub = None;
+    // Force a full-range histogram on the next draw.
+    app.views[app.active_tab].histogram_cache = None;
+}
+
+fn set_scrub_status(app: &mut App, zoom: Option<(i64, i64)>) {
+    let v = &mut app.views[app.active_tab];
+    let zoom_part = match zoom {
+        Some((lo, hi)) => format!(
+            " · zoom [{}..{}]",
+            crate::panes::timeline::format_micros_short(lo),
+            crate::panes::timeline::format_micros_short(hi)
+        ),
+        None => String::new(),
+    };
+    v.status_msg = format!(
+        "scrub: <> move · +/- zoom · Enter apply · Esc cancel{}",
+        zoom_part
+    );
+}
+
 fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
         // Ensure the active view's histogram is built before the closure
@@ -656,9 +892,11 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 engine,
                 views,
                 active_tab,
+                scrub,
                 ..
             } = app;
-            let _ = views[*active_tab].histogram(engine, bars);
+            let zoom = scrub.as_ref().and_then(|s| s.zoom);
+            let _ = views[*active_tab].histogram(engine, bars, zoom);
         }
 
         terminal.draw(|f| {
@@ -802,7 +1040,8 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
             let v = &app.views[app.active_tab];
             if let Some(slot) = timeline_slot {
                 if let Some((_, _, h)) = &v.histogram_cache {
-                    timeline::render(f, outer[slot], h, app.theme);
+                    let scrub_cursor = app.scrub.as_ref().map(|s| s.cursor_bin);
+                    timeline::render(f, outer[slot], h, app.theme, scrub_cursor);
                 }
             }
 
@@ -1061,8 +1300,62 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 );
                             }
                             (KeyCode::Esc, _) => {
-                                let engine = &app.engine;
-                                app.views[app.active_tab].clear_filters(engine);
+                                // Two-tier Esc: if a scrub is in flight,
+                                // first press cancels the scrub (cursor
+                                // and any zoom). Second press (or first
+                                // press without scrub) clears all
+                                // filters on the active view.
+                                if app.scrub.is_some() {
+                                    app.scrub = None;
+                                    // The histogram cache was overwritten
+                                    // with a zoomed version on the last
+                                    // draw — invalidate so the next draw
+                                    // rebuilds at full range.
+                                    app.views[app.active_tab].histogram_cache = None;
+                                } else {
+                                    let engine = &app.engine;
+                                    app.views[app.active_tab].clear_filters(engine);
+                                }
+                            }
+                            // --- Timeline scrub ---
+                            //
+                            // First press of `<` or `>` (with no Shift)
+                            // activates the scrub at the centre of the
+                            // histogram; subsequent presses move the
+                            // cursor by one bin. Shift-< / Shift-> jump
+                            // by ten bins. `+` zooms in (halve the
+                            // visible span around the cursor); `-`
+                            // zooms out (double it, capped at the full
+                            // range). Enter applies the current scrub
+                            // selection — single bin if no zoom, the
+                            // full zoom range otherwise — as a
+                            // TimeRangePredicate on the active view.
+                            (KeyCode::Char('<'), m)
+                            | (KeyCode::Char(','), m)
+                                if !app.engine.indexes.line.locs.is_empty()
+                                    && app.engine.has_timestamps() =>
+                            {
+                                let step = if m.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                handle_scrub_move(app, -step);
+                            }
+                            (KeyCode::Char('>'), m)
+                            | (KeyCode::Char('.'), m)
+                                if !app.engine.indexes.line.locs.is_empty()
+                                    && app.engine.has_timestamps() =>
+                            {
+                                let step = if m.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                handle_scrub_move(app, step);
+                            }
+                            (KeyCode::Char('+'), _) | (KeyCode::Char('='), _)
+                                if app.scrub.is_some() =>
+                            {
+                                handle_scrub_zoom(app, ZoomDir::In);
+                            }
+                            (KeyCode::Char('-'), _) if app.scrub.is_some() => {
+                                handle_scrub_zoom(app, ZoomDir::Out);
+                            }
+                            (KeyCode::Enter, _) if app.scrub.is_some() => {
+                                handle_scrub_apply(app);
                             }
                             (KeyCode::Up, _) => wheel_delta -= 1,
                             (KeyCode::Down, _) => wheel_delta += 1,
@@ -1244,6 +1537,56 @@ mod tests {
         assert_eq!(view.cursor, 7);
         assert!(view.jump_next_bookmark());
         assert_eq!(view.cursor, 1);
+    }
+
+    #[test]
+    fn time_range_filter_narrows_view() {
+        // 10 records at t=0,1,...,9 (seconds). time_range = [3s, 6s]
+        // inclusive → keeps records 3,4,5,6 → 4 hits.
+        let records: Vec<(i64, u8)> =
+            (0..10).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let engine = synthetic_engine(&records);
+
+        let mut view = View::new_all(&engine);
+        assert_eq!(view.filtered_view.len(), 10);
+        view.time_range = Some((3_000_000, 6_000_000));
+        view.rebuild_view(&engine);
+        assert_eq!(view.filtered_view.len(), 4);
+    }
+
+    #[test]
+    fn time_range_composes_with_severity_filter() {
+        // Mix info and error so severity narrows the survivors of the
+        // time range. error at t=0,2,4,6,8; info at t=1,3,5,7,9.
+        let mut records = Vec::new();
+        for i in 0..5 {
+            records.push((i * 2 * 1_000_000, severity::ERROR));
+            records.push(((i * 2 + 1) * 1_000_000, severity::INFO));
+        }
+        let engine = synthetic_engine(&records);
+
+        let mut view = View::new_all(&engine);
+        view.time_range = Some((3_000_000, 6_000_000));
+        view.set_severity("Error", &[severity::ERROR], &engine);
+        // Range covers t=3,4,5,6 (one error at 4, one error at 6).
+        // info at 3,5 are filtered out by severity. Survivors: 2.
+        assert_eq!(view.filtered_view.len(), 2);
+    }
+
+    #[test]
+    fn time_range_cleared_with_filters() {
+        let records: Vec<(i64, u8)> =
+            (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let engine = synthetic_engine(&records);
+
+        let mut view = View::new_all(&engine);
+        view.time_range = Some((1_000_000, 2_000_000));
+        view.rebuild_view(&engine);
+        assert_eq!(view.filtered_view.len(), 2);
+
+        view.clear_filters(&engine);
+        assert!(view.time_range.is_none());
+        assert_eq!(view.filtered_view.len(), 5);
     }
 
     /// `Esc` clears every active filter and the view returns to all records,

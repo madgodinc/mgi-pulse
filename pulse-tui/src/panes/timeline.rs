@@ -16,7 +16,7 @@ const BAR_CHARS: [char; 8] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '�
 
 // Bar colours now come from `crate::theme::Theme::histogram_bar`.
 
-fn format_micros_short(micros: i64) -> String {
+pub fn format_micros_short(micros: i64) -> String {
     if micros == i64::MIN || micros == 0 {
         return "—".to_string();
     }
@@ -53,7 +53,13 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 /// Each band is normalised against its own peak across the row, not the
 /// overall total — otherwise on a 1.2M-error / 9.8M-info dataset the warn
 /// band would always render as one pixel.
-pub fn render(f: &mut Frame, area: Rect, h: &Histogram, theme: crate::theme::Theme) {
+pub fn render(
+    f: &mut Frame,
+    area: Rect,
+    h: &Histogram,
+    theme: crate::theme::Theme,
+    scrub_cursor: Option<usize>,
+) {
     let block = Block::default().title(" timeline ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -139,7 +145,7 @@ pub fn render(f: &mut Frame, area: Rect, h: &Histogram, theme: crate::theme::The
     let style_dbg = theme.histogram_bar(severity::DEBUG);
 
     let mut rows: Vec<Vec<Span>> = vec![Vec::with_capacity(h.bins.len()); band_rows];
-    for bin in &h.bins {
+    for (bin_idx, bin) in h.bins.iter().enumerate() {
         let err = bin.error + bin.fatal;
         let warn = bin.warn;
         let info = bin.info;
@@ -155,6 +161,12 @@ pub fn render(f: &mut Frame, area: Rect, h: &Histogram, theme: crate::theme::The
         let ch_info = BAR_CHARS[frac_info.min(bar_steps) as usize];
         let ch_dbg = BAR_CHARS[frac_dbg.min(bar_steps) as usize];
 
+        // Scrub cursor: this column is highlighted (reverse video) so
+        // the user sees exactly which bin Enter would apply, regardless
+        // of bar height. Reversed across every band row makes it a
+        // vertical line.
+        let on_cursor = scrub_cursor == Some(bin_idx);
+
         for (row_idx, row) in rows.iter_mut().enumerate().take(band_rows) {
             let (ch, style) = if Some(row_idx) == err_row {
                 (ch_err, style_err)
@@ -166,6 +178,11 @@ pub fn render(f: &mut Frame, area: Rect, h: &Histogram, theme: crate::theme::The
                 (ch_dbg, style_dbg)
             } else {
                 (' ', Style::default())
+            };
+            let style = if on_cursor {
+                style.add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            } else {
+                style
             };
             row.push(Span::styled(ch.to_string(), style));
         }

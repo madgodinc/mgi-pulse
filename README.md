@@ -159,12 +159,15 @@ when the input is unstructured — you just lose the typed table.
 | `:` | Open query DSL | `level=error AND msg~/boom/` |
 | `f` | Open `field=value` filter | Composes with regex and DSL (AND) |
 | `t` | Jump to a timestamp | RFC3339 prefix, e.g. `2026-06-01T12:00` |
+| `<` / `>` | Move the timeline scrub cursor | First press activates scrub; Shift jumps 10 bins |
+| `+` / `-` | Zoom the timeline in / out | Halves / doubles the visible range around the cursor |
+| `Enter` | Apply scrub as a time-range filter | Single bin if no zoom, the full zoom window otherwise |
 | `d` | Toggle detail pane | Pretty-printed JSON; ±5 context in less-mode |
 | `m` | Toggle severity strict / min-mode | `Warn` vs `Warn+` |
 | `0`–`4` | Severity filter on active tab | `0` clears, `1` Error+Fatal, `2` Warn, `3` Info, `4` Debug+Trace |
 | `b` | Toggle bookmark on focused row | Yellow ★ in the gutter |
 | `B` | Jump to next bookmark | Wraps at the end |
-| `Esc` | Clear all filters on this tab | Regex + field + DSL + severity |
+| `Esc` | Cancel scrub, or clear filters | First press cancels an active scrub; otherwise clears all filters on the tab |
 | `R` | Rescan schema | Useful when the initial 10k were a boot banner |
 | `Tab` / `Shift-Tab` | Next / previous tab | |
 | `Ctrl-T` / `Ctrl-W` | Open new / close current tab | Last close quits |
@@ -214,10 +217,9 @@ would block the UI on the tail's polling loop. v0.3 will land it.
 
 - **Native `--follow`.** See the section above; use `tail -F | -` for
   now.
-- **Timeline scrubbing or zoom.** The histogram is a static overview;
-  you can't click or scroll along the time axis to jump.
-- **Other log formats beyond the four implemented.** CEE/syslog,
-  Apache/nginx access logs, plain text with regex extraction — not yet.
+- **Plain-text regex extraction.** Non-structured logs (raw stdout,
+  `log4j` defaults) fall into less-mode — the table shows the raw
+  payload but doesn't synthesise typed fields from a regex template.
 - **Remote, multi-host, persistence.** Different product.
 
 ## Custom field names

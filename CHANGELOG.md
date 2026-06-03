@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Timeline scrub and zoom.** `<` / `>` move a scrub cursor across
+  the histogram bins (Shift jumps 10), `+` / `-` zoom the visible
+  range (halve / double, anchored on the cursor), `Enter` applies the
+  selection as a time-range filter on the active view. Single bin if
+  no zoom is active, the full zoom window otherwise. `Esc` cancels
+  the scrub on first press; a second `Esc` (or `Esc` with no scrub)
+  clears all filters. The histogram cache is invalidated on every
+  zoom change so the bars actually reflect the new window. New
+  `View::time_range` field composes with the existing
+  regex/field/severity/DSL filters via AND, and persists in the
+  filter stack until cleared. `Histogram::build_over_range` for the
+  per-window build path. Closes #3.
 - **Apache / nginx access log format** (Common + Combined Log Format).
   `--format=access` parses the CLF `host - user [date] "request" status
   bytes` shape and the Combined extension that adds `"referer"

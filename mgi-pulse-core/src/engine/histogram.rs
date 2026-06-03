@@ -148,6 +148,53 @@ impl Histogram {
         out
     }
 
+    /// Build a histogram restricted to a fixed time window. `t_lo` /
+    /// `t_hi` are inclusive bounds in micros. Records outside the
+    /// window are skipped, untimed records count toward the
+    /// `untimed` field same as in `build_over`. Used by the timeline
+    /// scrub zoom — the cursor stays anchored at a logical bin
+    /// position while the visible range narrows.
+    pub fn build_over_range(
+        engine: &Engine,
+        view: &[u64],
+        bins: usize,
+        t_lo: i64,
+        t_hi: i64,
+    ) -> Self {
+        if bins == 0 || view.is_empty() || t_hi < t_lo {
+            return Self::default();
+        }
+        let ts_index = &engine.indexes.time.ts;
+        let sevs = &engine.indexes.severity.levels;
+        let upper = t_hi.saturating_add(1);
+        let span = (upper - t_lo).max(1);
+        let mut out = Self {
+            bins: vec![Bin::default(); bins],
+            t_min: t_lo,
+            t_max: upper,
+            untimed: 0,
+        };
+        for &line_id in view {
+            let idx = line_id as usize;
+            let t = match ts_index.get(idx) {
+                Some(&t) => t,
+                None => continue,
+            };
+            if t == TS_UNTIMED {
+                out.untimed += 1;
+                continue;
+            }
+            if t < t_lo || t > t_hi {
+                continue;
+            }
+            let pos = (((t - t_lo) as i128 * bins as i128) / span as i128) as usize;
+            let pos = pos.min(bins - 1);
+            let sev = sevs.get(idx).copied().unwrap_or(severity::UNKNOWN);
+            out.bins[pos].add(sev);
+        }
+        out
+    }
+
     /// Largest `count` across all bins. Used by the renderer to normalize
     /// bar heights.
     pub fn peak(&self) -> u64 {
@@ -221,6 +268,36 @@ mod tests {
         let e = Engine::new();
         let h = Histogram::build(&e, 10);
         assert!(h.bins.is_empty());
+    }
+
+    #[test]
+    fn build_over_range_restricts_to_window() {
+        // 10 records at t=0,1,...,9 seconds. Restrict to [3s,6s].
+        let recs: Vec<(i64, u8)> = (0..10).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let e = make_engine(&recs);
+        let view: Vec<u64> = (0..10).collect();
+        let h = Histogram::build_over_range(&e, &view, 4, 3_000_000, 6_000_000);
+        // Window covers t=3,4,5,6 → 4 records distributed across 4 bins.
+        let total: u64 = h.bins.iter().map(|b| b.count).sum();
+        assert_eq!(total, 4);
+        // t_min / t_max reflect the window, not the engine.
+        assert_eq!(h.t_min, 3_000_000);
+        assert_eq!(h.t_max, 6_000_001);
+    }
+
+    #[test]
+    fn build_over_range_counts_untimed_separately() {
+        let recs = vec![
+            (1_000_000, severity::INFO),
+            (TS_UNTIMED, severity::WARN),
+            (5_000_000, severity::INFO),
+        ];
+        let e = make_engine(&recs);
+        let view: Vec<u64> = vec![0, 1, 2];
+        let h = Histogram::build_over_range(&e, &view, 2, 0, 10_000_000);
+        assert_eq!(h.untimed, 1);
+        let total: u64 = h.bins.iter().map(|b| b.count).sum();
+        assert_eq!(total, 2);
     }
 
     #[test]
