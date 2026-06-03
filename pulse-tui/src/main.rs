@@ -516,10 +516,17 @@ fn ingest_file(
         if mgi_pulse_core::io::json_array::looks_like_json_array(&head[..n]) {
             let raw = std::fs::read(path)
                 .with_context(|| format!("read {}", path.display()))?;
-            if raw.len() > 256 * 1024 * 1024 {
+            // 64 MB cap. The naive serde_json::Value flatten path
+            // explodes to 3-5× the raw size in resident memory (plus
+            // the re-serialised NDJSON buffer); 64 MB raw lands at
+            // roughly 250-400 MB RSS which is the most we want to
+            // pay for an "I'm opening a JSON dump" convenience.
+            // Bigger files: `jq -c '.[]' file.json | mgi-pulse -`.
+            if raw.len() > 64 * 1024 * 1024 {
                 anyhow::bail!(
-                    "JSON-array file is over 256 MB; pipe it through \
-                     `jq -c '.[]' <file> | mgi-pulse -` instead"
+                    "JSON-array file is over 64 MB; the in-memory flatten \
+                     path would balloon to several GB of RSS. Pipe through \
+                     `jq -c '.[]' <file> | mgi-pulse -` instead."
                 );
             }
             let ndjson = mgi_pulse_core::io::json_array::flatten_to_ndjson(&raw)

@@ -5,27 +5,22 @@ All notable changes to mgi-pulse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - 2026-06-03
+## [0.3.0] - 2026-06-03
 
-Big jump from 0.2.0. The intermediate development happened locally
-across what would have been several minor releases — they're
-reconstructed here as "phases" so the scope of each step is
-visible. The version skips to 0.9.0 because the project is now
-**feature-complete for v1.0**; what's left is dogfooding and bug
-fixes from real-world use, not new functionality.
+Adds seven log formats (eleven total), native `--follow`, timeline
+scrub, persistent bookmarks, regex extraction for plain-text logs,
+plus stats overlay, save-to-file, runtime column control. 125 → 245
+tests.
 
-What this release covers in one sentence: 7 new log formats (now
-11 total), native `--follow`, timeline scrub, persistent
-bookmarks, a generic regex-extraction fallback for arbitrary
-plain-text logs, plus stats overlay, save-to-file, runtime
-columns, and the tech-debt foundation (CONTRIBUTING, ADRs,
-benchmarks, semver-promise) needed to take v1.0 seriously.
+A `v0.9.0` tag briefly existed for this same code with a release
+note claiming "feature-complete for v1.0". That was wrong — the
+project hasn't been used by anyone yet, so "feature-complete" was
+not the author's call to make. Same code reshipped as `v0.3.0`;
+the `v0.9.0` tag is marked deprecated on the GitHub Releases page.
+The semver section in README applies at v1.0, when there is real
+usage to back it.
 
-Tests grew from 125 (in 0.2.0) to 244.
-
-### Phase A — Format coverage
-
-The 0.2.0 → 0.9.0 jump multiplies format support: 4 → 11.
+### Formats added
 
 - **Syslog RFC 5424.** `--format=syslog`. Full header
   (`<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID
@@ -77,7 +72,7 @@ The 0.2.0 → 0.9.0 jump multiplies format support: 4 → 11.
   brackets, eliminating false positives on logback's
   `[thread-name]`.
 
-### Phase B — UI / UX
+### UI changes
 
 - **Native `--follow` mode.** `mgi-pulse --follow app.log`
   backfills the existing file synchronously, then hands off to a
@@ -119,9 +114,7 @@ The 0.2.0 → 0.9.0 jump multiplies format support: 4 → 11.
 - **`bench/gen-ndjson-bursty.sh`** committed to the repo. Used for
   the README hero screenshots.
 
-### Phase C — Documentation, benchmarks, project hygiene
-
-Everything needed so v1.0 is a real commitment, not a vibe.
+### Documentation and infrastructure
 
 - **CONTRIBUTING.md** — build, layering rules, how to add a
   format, how to add a UI feature, style notes.
@@ -144,7 +137,7 @@ Everything needed so v1.0 is a real commitment, not a vibe.
   covering bugs, feature requests, and new formats. PR template
   includes the no-AI-coauthor rule.
 
-### Internals — what moved under the hood
+### Internal changes
 
 - **`OrPredicate`** mirror of `AndPredicate`, short-circuits on
   first match.
@@ -161,6 +154,20 @@ Everything needed so v1.0 is a real commitment, not a vibe.
 - **`io::SendableProducer`** marker trait for producers that move
   into worker threads.
 
+### Bug fixes
+
+- `--follow` now handles `copytruncate` rotation. The earlier
+  draft (briefly tagged `v0.9.0`) only detected `create/rename`
+  rotation via inode change; a logrotate run in `copytruncate`
+  mode left the reader silently stuck at the pre-truncate offset
+  while new writes accumulated below it. `TailReader` now also
+  re-opens when the file's size drops below the read cursor.
+- JSON-array adapter memory cap dropped from 256 MB to 64 MB.
+  The naive `serde_json::Value` flatten path expands to 3-5× of
+  the raw bytes in resident memory plus the re-serialised NDJSON
+  buffer, so 256 MB raw could land at multiple GB RSS. The
+  64 MB cap holds peak under a few hundred MB.
+
 ### Changed
 
 - DSL parser rewritten from a flat clause-AND-clause loop into a
@@ -168,7 +175,7 @@ Everything needed so v1.0 is a real commitment, not a vibe.
 - Bare-token DSL values now stop at `)` as well as whitespace, so
   `(level=error OR level=warn)` parses correctly.
 
-### Known limitations (carried into v1.0 dogfooding)
+### Known limitations
 
 - The synchronous backfill path is unchanged — opening a 30 GB
   file still blocks until the indexer finishes. Filed as a
@@ -178,13 +185,19 @@ Everything needed so v1.0 is a real commitment, not a vibe.
 - `--follow` works for a single file only; multi-file follow needs
   k-way merging on the channel side and isn't done.
 
-### What's left for v1.0
+### Notes on what's next
 
-Just dogfooding. The feature set is frozen; what comes next is
-real-world use catching real-world bugs. The semver promise in
-README starts applying once v1.0 ships, which is gated on two
-months of continuous use without a breaking CLI / DSL /
-keybinding change.
+v1.0 is not declared yet. The honest blocker is real usage — nobody
+has put this in front of a non-toy workload. Next steps in rough
+priority:
+
+- Get one or two real workloads on it. Whatever the user hits is
+  the v0.4 work list.
+- Resolve or accept the known limitations above.
+- Stop changing the CLI / DSL / keybindings for a sustained
+  period under real traffic. Two months is the rough target.
+
+Until then, treat 0.x as 0.x — minor versions can break things.
 
 ## [Unreleased]
 
@@ -342,6 +355,6 @@ Measured on an i5-12400F, 48 GB RAM, ext4 (see
 - Pre-built binaries: Linux musl only at release time. macOS and Windows are
   CI-checked but not shipped.
 
-[0.9.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.9.0
+[0.3.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.3.0
 [0.2.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.1.0

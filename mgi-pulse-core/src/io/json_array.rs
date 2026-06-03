@@ -12,10 +12,27 @@
 //!
 //! We re-emit those as NDJSON (one JSON object per line) so the rest
 //! of the engine indexes them the same way it indexes a real NDJSON
-//! file. The whole array is loaded into memory — fine for the
-//! exports we expect (<200 MB), but explicitly NOT a streaming
-//! parser; multi-GB JSON arrays should be `jq -c '.[]' file.json |
-//! mgi-pulse -` instead.
+//! file.
+//!
+//! ## Memory cost — read this before opening big files
+//!
+//! This adapter is NOT a streaming parser. The whole file is loaded
+//! and `serde_json::from_slice::<Value>` materialises an owned
+//! `Value` tree — every object becomes a `Map<String, Value>` with
+//! heap-allocated keys and values. Then `to_writer` re-serialises
+//! that tree into a second owned buffer.
+//!
+//! Realistic peak RSS = `raw bytes + owned Value tree (~3-5× of raw)
+//! + NDJSON output (~raw)`. A 100 MB array can reach ~500 MB-1 GB
+//! resident before the engine even starts indexing. A 200 MB array
+//! is on the edge of OOM on a 4 GB machine.
+//!
+//! The hard cap in `ingest_file` is set at 64 MB for this reason —
+//! anything bigger gets a clear "use `jq -c '.[]' file.json |
+//! mgi-pulse -`" message. A proper streaming parser
+//! (`StreamDeserializer` / `jiter`) could lift the cap to "limited
+//! by disk", but it's deferred until the use case shows up — the
+//! `jq` workaround covers the gap.
 //!
 //! Detection: the first non-whitespace byte is `[` and the second
 //! non-whitespace byte is `{` or `]`. Anything else hands back to

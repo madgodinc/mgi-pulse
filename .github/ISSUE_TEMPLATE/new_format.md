@@ -10,13 +10,13 @@ labels: format, enhancement
 
 ## Reference
 
-<!-- Spec URL, canonical emitter, or a representative tool that generates
-     it. Helps narrow which variant of the format to target. -->
+<!-- Spec URL, canonical emitter, or a tool that generates the format.
+     Helps narrow which variant to target. -->
 
 ## Fixture
 
-<!-- 5-10 lines of real content, ideally covering one error and one normal
-     record so severity mapping can be tested. -->
+<!-- 5-10 lines of real content. Ideally covers one error record and
+     one normal one so severity mapping can be tested. -->
 
 ```
 <paste here>
@@ -24,6 +24,6 @@ labels: format, enhancement
 
 ## Field semantics
 
-<!-- Which fields should be projectable for predicates? Which one is the
-     timestamp, which is severity, and what other fields tend to matter
-     for filtering / search? -->
+<!-- Which fields should be projectable for predicates?
+     Which field is the timestamp, which is severity, what other
+     fields tend to matter for filtering / search? -->

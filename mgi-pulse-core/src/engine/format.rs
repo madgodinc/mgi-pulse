@@ -251,13 +251,45 @@ impl LogFormat {
 
     /// Cheap heuristic to guess a format from the first records of an
     /// input. Auto-detect is opt-in: producers default to whatever the
-    /// CLI says. Returns `Ndjson` when in doubt.
+    /// CLI says.
     ///
-    /// Heuristic: a line that starts with `{` and ends with `}` is
-    /// treated as NDJSON; a line that has at least two `key=value` pairs
-    /// (no leading `{`) is logfmt. Everything else defaults to NDJSON
-    /// so plain-text falls into the less-mode path the way the user
-    /// already expects.
+    /// ## Behaviour summary
+    ///
+    /// - Per-line votes accumulate; a format needs at least 2 votes
+    ///   AND a strict majority over rival formats to win.
+    /// - Single-line files and ambiguous samples (no format reaches
+    ///   the 2-vote threshold) fall back to `LogFormat::Ndjson`. This
+    ///   is intentional: NDJSON sources that happen to have only one
+    ///   line of probe content land on the correct parser, and
+    ///   genuinely plain-text content fails to parse as NDJSON in a
+    ///   way that's reported in the dry-run summary (`json errors: N`)
+    ///   — so the user has a clear signal to pass `--format` or
+    ///   `--pattern`.
+    ///
+    /// ## Probe window vs full file
+    ///
+    /// Only the head of the file is sampled (~16 KiB / 64 lines in
+    /// the CLI wrapper). A file that opens with a banner of a
+    /// different shape than the body (e.g. plain-text header before
+    /// the NDJSON records) can fool the detector. The mitigations:
+    ///
+    /// - The user can force the format with `--format=...`.
+    /// - The `R` key rescans the **schema** (column derivation) over
+    ///   the middle of the current filtered view, but does NOT
+    ///   re-run format detection — the format is a property of the
+    ///   source decided at ingest time and isn't revisited. If the
+    ///   banner misled detect, restart with `--format`.
+    ///
+    /// Per-line format dispatch is intentionally out of scope; see
+    /// ADR 0004.
+    ///
+    /// ## Precedence order
+    ///
+    /// More specific signatures win over less specific ones:
+    /// syslog > access > logback > journalctl > NDJSON / EDN >
+    /// logfmt > TSV > CSV. CSV / TSV go last because "≥2 delimiters
+    /// outside quotes" is the loosest signature and would otherwise
+    /// claim free-form prose with commas.
     pub fn detect(first_lines: &[&[u8]]) -> LogFormat {
         let mut ndjson_votes = 0;
         let mut logfmt_votes = 0;

@@ -22,6 +22,13 @@ pub struct TailReader {
     path: PathBuf,
     reader: BufReader<File>,
     inode: u64,
+    /// Logical position in the underlying file: the offset we expect
+    /// the next read to come from. Maintained by Read / BufRead impls
+    /// (incrementing by the count of consumed bytes). Used by
+    /// `check_rotation` to detect copytruncate: when the file's
+    /// current size drops below this position, the file was truncated
+    /// in place and we have to re-open and seek to 0.
+    read_pos: u64,
 }
 
 impl TailReader {
@@ -30,12 +37,13 @@ impl TailReader {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)?;
-        file.seek(SeekFrom::End(0))?;
+        let end = file.seek(SeekFrom::End(0))?;
         let inode = inode_of(&file)?;
         Ok(Self {
             path,
             reader: BufReader::with_capacity(64 * 1024, file),
             inode,
+            read_pos: end,
         })
     }
 
@@ -50,9 +58,25 @@ impl TailReader {
             path,
             reader: BufReader::with_capacity(64 * 1024, file),
             inode,
+            read_pos: 0,
         })
     }
 
+    /// Check whether the underlying file has been rotated since the
+    /// last read. Two distinct modes are handled:
+    ///
+    /// - **rename/create rotation** (logrotate's default `create`
+    ///   mode, also what `mv app.log app.log.1 && touch app.log`
+    ///   produces). The inode changes; we re-open the new file and
+    ///   read from the start.
+    /// - **copytruncate** (logrotate's `copytruncate` mode, common
+    ///   for daemons that can't be signalled to reopen their log).
+    ///   The file is copied elsewhere, then truncated to 0 bytes in
+    ///   place — the inode is unchanged but the file's size drops
+    ///   below our `read_pos`. We re-open and seek to 0 to start
+    ///   reading the fresh content. Without this branch the reader
+    ///   would silently hang on EOF forever while new writes
+    ///   accumulate at offsets below the stale cursor.
     fn check_rotation(&mut self) -> io::Result<bool> {
         let new_meta = match std::fs::metadata(&self.path) {
             Ok(m) => m,
@@ -65,12 +89,28 @@ impl TailReader {
         };
         #[cfg(not(unix))]
         let new_inode = new_meta.len();
+        let new_size = new_meta.len();
+
+        // rename/create: inode changes → fresh file, start from 0.
         if new_inode != self.inode {
             let new_file = File::open(&self.path)?;
             self.inode = inode_of(&new_file)?;
             self.reader = BufReader::with_capacity(64 * 1024, new_file);
+            self.read_pos = 0;
             return Ok(true);
         }
+
+        // copytruncate: same inode but file shrank below our cursor.
+        // We have to drop the cached buffered reader (its position is
+        // past EOF now) and re-open. seek(0) is implicit on a fresh
+        // BufReader<File>.
+        if new_size < self.read_pos {
+            let new_file = File::open(&self.path)?;
+            self.reader = BufReader::with_capacity(64 * 1024, new_file);
+            self.read_pos = 0;
+            return Ok(true);
+        }
+
         Ok(false)
     }
 }
@@ -91,6 +131,17 @@ impl Read for TailReader {
         loop {
             let n = self.reader.read(buf)?;
             if n > 0 {
+                // NOTE: we intentionally do NOT update `read_pos` here
+                // even though bytes were just consumed. The BufRead
+                // path (fill_buf + consume) is the authoritative
+                // source of position tracking; mirroring it here would
+                // double-count when both paths interleave (`read_until`
+                // calls fill_buf+consume, then a stray `Read::read`).
+                // All producers in this crate route through BufRead,
+                // so this is safe. If you ever drive a TailReader
+                // through plain `Read::read` (no BufRead consume),
+                // copytruncate detection will lag — replace this
+                // type's Read impl with an explicit position tracker.
                 return Ok(n);
             }
             if self.check_rotation()? {
@@ -116,6 +167,9 @@ impl BufRead for TailReader {
     }
 
     fn consume(&mut self, amt: usize) {
+        // BufRead::consume is the actual "we read these bytes" signal
+        // for the buffered path — track the offset here.
+        self.read_pos = self.read_pos.saturating_add(amt as u64);
         self.reader.consume(amt);
     }
 }
@@ -153,5 +207,70 @@ mod tests {
         let n = tail.reader.read(&mut buf).unwrap();
         assert_eq!(n, 0);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn copytruncate_is_detected_and_reopens() {
+        // Simulate logrotate's copytruncate: same inode, file is
+        // truncated in place. The reader must spot this in
+        // check_rotation and re-open from offset 0 so subsequent
+        // writes are visible.
+        let p = tmp_path("copytruncate.log");
+        std::fs::write(&p, b"old line 1\nold line 2\n").unwrap();
+        let mut tail = TailReader::open_from_start(&p).unwrap();
+
+        // Read everything via the BufRead path (this is the same
+        // path StreamProducer uses).
+        let mut buf = Vec::new();
+        let line_count = consume_all_available(&mut tail, &mut buf);
+        assert!(line_count >= 2, "expected at least 2 lines, got {}", line_count);
+        // read_pos is now == file size; rotation check should report
+        // "no rotation" while everything matches.
+        assert!(!tail.check_rotation().unwrap());
+
+        // Simulate copytruncate: open the file with truncate flag,
+        // then write a fresh, shorter line. Same inode, smaller size.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&p)
+            .unwrap();
+        std::fs::write(&p, b"fresh\n").unwrap();
+
+        // Now check_rotation should fire (file size 6 < read_pos ~21).
+        let rotated = tail.check_rotation().unwrap();
+        assert!(rotated, "copytruncate should be detected");
+        assert_eq!(tail.read_pos, 0, "read_pos must reset after truncate");
+
+        // After the rotation handler swaps in the new BufReader, we
+        // should be able to read the fresh content.
+        buf.clear();
+        consume_all_available(&mut tail, &mut buf);
+        assert_eq!(&buf, b"fresh\n");
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// Helper: drain whatever the inner BufReader has buffered, plus
+    /// what's available on disk right now. Does NOT engage TailReader's
+    /// blocking poll loop — we want to test the rotation handler in
+    /// isolation. Returns the count of newline-terminated lines seen.
+    fn consume_all_available(tail: &mut TailReader, sink: &mut Vec<u8>) -> usize {
+        let mut lines = 0;
+        // Drive only the inner reader to avoid the blocking poll.
+        loop {
+            let available = match tail.reader.fill_buf() {
+                Ok(b) if !b.is_empty() => b.to_vec(),
+                _ => break,
+            };
+            sink.extend_from_slice(&available);
+            // Mirror the same consume() call the BufRead impl would
+            // do; this is what advances tail.read_pos.
+            let n = available.len();
+            tail.read_pos = tail.read_pos.saturating_add(n as u64);
+            tail.reader.consume(n);
+            lines += available.iter().filter(|&&b| b == b'\n').count();
+        }
+        lines
     }
 }
