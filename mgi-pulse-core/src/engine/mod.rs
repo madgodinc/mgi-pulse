@@ -196,7 +196,8 @@ impl Engine {
             self.indexes.severity.levels[line_id as usize] = sev;
             // Same fold-fix as CSV: subtract the indexer's earlier
             // "untimed" mark first.
-            self.indexes.parse_stats.untimed -= 1;
+            self.indexes.parse_stats.untimed =
+                self.indexes.parse_stats.untimed.saturating_sub(1);
             self.indexes.parse_stats.untimed += stats.untimed;
             self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
             self.indexes.parse_stats.json_parse_errors += stats.json_parse_errors;
@@ -251,7 +252,8 @@ impl Engine {
             // Subtract the indexer's earlier "untimed" mark first to
             // avoid double-counting (every CSV row got incremented in
             // the first pass).
-            self.indexes.parse_stats.untimed -= 1;
+            self.indexes.parse_stats.untimed =
+                self.indexes.parse_stats.untimed.saturating_sub(1);
             self.indexes.parse_stats.untimed += stats.untimed;
             self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
         }

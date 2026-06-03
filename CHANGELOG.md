@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **JSON-array input adapter.** Files whose first non-whitespace bytes
+  look like `[{` are loaded into memory, flattened to NDJSON, and
+  indexed through the normal stream path. Caps at 256 MB to keep
+  the in-memory step bounded; bigger arrays should pipe through
+  `jq -c '.[]'`. Auto-detected — no `--format` flag needed.
 - **Save filtered view to a file** with `s`. Opens a `save:` prompt;
   Enter writes the current view's records to the given path
   (one record per line, newline-terminated), Esc cancels. I/O

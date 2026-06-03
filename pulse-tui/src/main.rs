@@ -430,6 +430,14 @@ fn detect_format_from_files(files: &[PathBuf]) -> Option<LogFormat> {
     if bytes.is_empty() {
         return None;
     }
+    // JSON-array files have one logical record per element but are
+    // packed on one or two lines; the standard newline-splitter would
+    // give the heuristic a single giant "line" loaded with commas and
+    // mis-vote CSV. The ingest path flattens them to real NDJSON
+    // before indexing, so report Ndjson here.
+    if mgi_pulse_core::io::json_array::looks_like_json_array(&bytes) {
+        return Some(LogFormat::Ndjson);
+    }
     // Take up to 64 newline-terminated lines from the probe. Strip
     // trailing CR for CRLF inputs.
     let lines: Vec<&[u8]> = bytes
@@ -492,6 +500,48 @@ fn ingest_file(
             "indexed compressed file"
         );
         return Ok(());
+    }
+
+    // JSON-array adapter: if the file's first non-whitespace bytes are
+    // `[{`, load it into memory, flatten to NDJSON, and stream through
+    // the existing StreamProducer path. Caps at ~256 MB to avoid OOM
+    // on huge exports — bigger files should pipe through `jq -c '.[]'`.
+    {
+        let mut head = [0u8; 16];
+        let mut f = std::fs::File::open(path)
+            .with_context(|| format!("open {}", path.display()))?;
+        use std::io::Read;
+        let n = f.read(&mut head).unwrap_or(0);
+        drop(f);
+        if mgi_pulse_core::io::json_array::looks_like_json_array(&head[..n]) {
+            let raw = std::fs::read(path)
+                .with_context(|| format!("read {}", path.display()))?;
+            if raw.len() > 256 * 1024 * 1024 {
+                anyhow::bail!(
+                    "JSON-array file is over 256 MB; pipe it through \
+                     `jq -c '.[]' <file> | mgi-pulse -` instead"
+                );
+            }
+            let ndjson = mgi_pulse_core::io::json_array::flatten_to_ndjson(&raw)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let reader = std::io::Cursor::new(ndjson);
+            let mut producer = StreamProducer::new(reader, 0);
+            if let Some(f) = fields {
+                producer = producer.with_fields(f);
+            }
+            producer = producer.with_format(fmt);
+            engine.source_formats.push(fmt);
+            let mut multiline = MultiLineProducer::new(producer, fmt);
+            indexer::drain(&mut multiline, engine);
+            let dt = t0.elapsed();
+            tracing::info!(
+                path = %path.display(),
+                records = engine.indexes.len(),
+                elapsed_ms = dt.as_millis() as u64,
+                "indexed JSON array"
+            );
+            return Ok(());
+        }
     }
 
     let mut producer =

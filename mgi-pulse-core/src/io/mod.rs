@@ -14,6 +14,7 @@
 
 pub mod compressed;
 pub mod file;
+pub mod json_array;
 pub mod merge;
 pub mod multiline;
 pub mod stream;
