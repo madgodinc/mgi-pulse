@@ -26,6 +26,7 @@ pub mod parse_logfmt;
 pub mod parse_python;
 pub mod parse_regex;
 pub mod parse_syslog;
+pub mod stats;
 pub mod predicate;
 pub mod query;
 

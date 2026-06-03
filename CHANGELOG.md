@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Stats overlay with `?`.** Toggle a sidebar that summarises the
+  current filtered view: total records, per-severity counts (only the
+  non-zero levels are shown), untimed bucket, time span, and the
+  top-8 values of the primary auto-column. Cheap single-pass scan;
+  high-cardinality fields stop bucketing at 1024 distinct values to
+  keep it bounded. New `engine::stats` module owns the math; the
+  `panes::stats` overlay shares the right-side split that the detail
+  pane uses — when both are toggled, stats wins.
 - **JSON-array input adapter.** Files whose first non-whitespace bytes
   look like `[{` are loaded into memory, flattened to NDJSON, and
   indexed through the normal stream path. Caps at 256 MB to keep

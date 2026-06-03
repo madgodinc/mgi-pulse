@@ -10,5 +10,6 @@
 //! must not be broken in the default mode.
 
 pub mod detail;
+pub mod stats;
 pub mod table;
 pub mod timeline;

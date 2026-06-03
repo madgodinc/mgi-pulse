@@ -526,6 +526,9 @@ pub struct App {
     /// initial backfill ended. Displayed in the status bar as a
     /// `+N live` badge so the user sees the index growing.
     pub live_appended: u64,
+    /// Toggled by `?` — when true, an overlay pane renders a Stats
+    /// summary over the right half of the layout.
+    pub show_stats: bool,
 }
 
 /// Ephemeral UI state for the timeline scrub. Lives only while the user
@@ -617,6 +620,7 @@ impl App {
             scrub: None,
             live_rx: None,
             live_appended: 0,
+            show_stats: false,
         }
     }
 
@@ -1179,7 +1183,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 app.source_label,
                 v.filtered_view.len()
             );
-            if v.detail_open {
+            if v.detail_open || app.show_stats {
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -1196,7 +1200,25 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     app.theme,
                     &v.bookmarks,
                 );
-                detail::render(f, split[1], &app.engine, v.cursor);
+                // Stats wins over detail when both are toggled —
+                // user pressed ? more recently, so show that.
+                if app.show_stats {
+                    let top_field = app
+                        .engine
+                        .schema
+                        .as_ref()
+                        .and_then(|s| s.auto_columns(8).first().map(|c| c.to_string()))
+                        .unwrap_or_default();
+                    let stats = mgi_pulse_core::engine::stats::Stats::build(
+                        &app.engine,
+                        &v.filtered_view,
+                        &top_field,
+                        8,
+                    );
+                    crate::panes::stats::render(f, split[1], &stats, app.theme);
+                } else {
+                    detail::render(f, split[1], &app.engine, v.cursor);
+                }
             } else {
                 table::render(
                     f,
@@ -1378,6 +1400,12 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 // Prompt for the path; Enter writes, Esc
                                 // cancels.
                                 app.input = Some(Input::Save(String::new()));
+                            }
+                            (KeyCode::Char('?'), _) => {
+                                // Toggle the stats overlay. Same view's
+                                // filtered records are summarised on
+                                // each open (cheap single-pass scan).
+                                app.show_stats = !app.show_stats;
                             }
                             (KeyCode::Char('d'), _) => {
                                 let v = app.active();
