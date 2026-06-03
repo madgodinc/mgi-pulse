@@ -238,6 +238,40 @@ impl Predicate for AndPredicate {
     }
 }
 
+/// OR-composition. Mirror of `AndPredicate` — empty matches *nothing*
+/// (vacuous OR), `f OR g` survives if either side does. Built by the
+/// DSL parser; UI-level filter stacks still use AND.
+pub struct OrPredicate {
+    pub parts: Vec<Box<dyn Predicate>>,
+}
+
+impl OrPredicate {
+    pub fn new() -> Self {
+        Self { parts: Vec::new() }
+    }
+    pub fn push(&mut self, p: Box<dyn Predicate>) {
+        self.parts.push(p);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+    pub fn len(&self) -> usize {
+        self.parts.len()
+    }
+}
+
+impl Default for OrPredicate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Predicate for OrPredicate {
+    fn matches(&self, rec: &RawRecord, cache: &mut FieldCache<'_>) -> bool {
+        self.parts.iter().any(|p| p.matches(rec, cache))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

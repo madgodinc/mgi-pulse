@@ -9,16 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DSL boolean composition: `OR`, `NOT`, parentheses.** The parser is
+  now a recursive-descent grammar with conventional precedence (`NOT`
+  binds tightest, then `AND`, then `OR`; parens override). Closes #8.
+  Keywords are uppercase ASCII so they never collide with field names
+  like `and_count`. Examples:
+  - `(level=error OR level=warn) AND NOT logger=health-check`
+  - `level=error AND (msg~/timeout/ OR msg~/refused/)`
+  - `NOT logger=health-check`
+- **`OrPredicate`** in `mgi-pulse-core` — mirror of `AndPredicate`,
+  short-circuits on first match. Empty composition is vacuously false
+  (matches nothing), symmetric to `AndPredicate`'s vacuous true.
 - **`NO_COLOR` / `TERM=dumb` / non-tty stdout** force the `nocolor` theme
   regardless of `--theme` and `MGI_PULSE_THEME`. Follows the
   [no-color.org](https://no-color.org/) convention; the precedence is
   env-override > `--theme` flag > `MGI_PULSE_THEME` > `dark` default.
+  Closes #10.
 - **`;` opens the DSL prompt** as an alternative to `:`, for keyboard
   layouts where typing `:` needs an awkward modifier (Russian, some Mac
   layouts).
 - **`bench/gen-ndjson-bursty.sh`** committed to the repo. Time-varying
   severity distribution used for the README hero screenshots so the
   timeline histogram has visible structure instead of a flat strip.
+
+### Changed
+
+- DSL parser rewritten from a flat clause-AND-clause loop into a
+  recursive-descent expression tree. Bare-token values now stop at `)`
+  as well as whitespace, so `(level=error OR level=warn)` parses the
+  inner `warn` as `warn`, not `warn)`. Use a quoted value if a literal
+  trailing paren is needed.
 
 ## [0.2.0] - 2026-06-01
 

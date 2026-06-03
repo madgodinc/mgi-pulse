@@ -67,20 +67,25 @@ timestamp, `d` toggles the detail pane, `b` bookmarks the focused row,
 
 ### Query DSL
 
-Press `:` to enter a one-line query. Compiles into the same filter
-machinery the table already uses, so it composes with the active tab
-and the legacy prompts:
+Press `:` (or `;` on layouts where `:` is awkward) to enter a one-line
+query. Compiles into the same filter machinery the table already uses,
+so it composes with the active tab and the legacy prompts:
 
 ```text
 level=error
 level=error AND msg~/timeout/
+(level=error OR level=warn) AND NOT logger=health-check
+level=error AND (msg~/timeout/ OR msg~/refused/)
 ts>=2026-06-01T12:00 AND ts<2026-06-01T13:00
 logger=my.app AND msg~/conn(ection)? lost/ AND level!=debug
 ```
 
-Operators: `=`, `!=`, `~/regex/`, and `>`, `>=`, `<`, `<=` (the
-comparison ops only apply to `ts`). Compose with `AND`. Syntax errors
-are reported in the status bar before any scan.
+Field operators: `=`, `!=`, `~/regex/`, and `>`, `>=`, `<`, `<=` (the
+comparison ops only apply to `ts`). Boolean composition: `AND`, `OR`,
+`NOT`, parentheses. Precedence is the conventional one — `NOT` binds
+tightest, then `AND`, then `OR`. Keywords are uppercase ASCII so they
+don't collide with field names like `and_count`. Syntax errors are
+reported in the status bar before any scan.
 
 ![DSL filter `logger=aurora.tts AND msg~/timeout/` narrows 11 M records to 203 698 matches; the timeline and the table both update to the result set](docs/screenshots/05-dsl-query.png)
 

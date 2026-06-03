@@ -1,22 +1,32 @@
-//! Mini query DSL — compiles a one-line expression into an
-//! `AndPredicate`.
+//! Mini query DSL — compiles a one-line expression into a predicate
+//! tree.
 //!
-//! Grammar (v0.2):
+//! Grammar:
 //!
 //! ```text
-//! query  := clause (WS+ "AND" WS+ clause)*
-//! clause := field op value
-//! op     := "=" | "!=" | "~" | ">" | ">=" | "<" | "<="
-//! value  := /[^ ]+/   |   "\"" [^"]* "\""   |   "/" [^/]* "/"
+//! expr    := or_expr
+//! or_expr := and_expr ("OR" and_expr)*
+//! and_expr:= unary ("AND" unary)*
+//! unary   := "NOT" unary | atom
+//! atom    := "(" expr ")" | clause
+//! clause  := field op value
+//! op      := "=" | "!=" | "~" | ">" | ">=" | "<" | "<="
+//! value   := /[^ ]+/   |   "\"" [^"]* "\""   |   "/" [^/]* "/"
 //! ```
+//!
+//! Precedence: `NOT` binds tightest, then `AND`, then `OR`. Parens
+//! override. Operator keywords are case-sensitive ASCII (`AND` / `OR`
+//! / `NOT` — lowercase would be ambiguous with field names like
+//! `and_count`).
 //!
 //! Examples:
 //!
 //! ```text
 //! level=error
 //! level=error AND msg~/timeout/
+//! (level=error OR level=warn) AND NOT logger=health-check
+//! level=error AND (msg~/timeout/ OR msg~/refused/)
 //! ts>=2026-06-01 AND level=error
-//! logger=my.app AND msg~/conn(ection)? lost/
 //! ```
 //!
 //! Operators map to:
@@ -24,14 +34,11 @@
 //! - `~` → `FieldRegexPredicate` (regex against the projected field).
 //! - `>`, `>=`, `<`, `<=` apply only to `ts` and compile to
 //!   `TimeRangePredicate`. Other fields with a comparison op are a
-//!   parse error in v0.2.
-//!
-//! Backlog: parentheses, `OR`, `NOT`, numeric comparisons on arbitrary
-//! fields.
+//!   parse error.
 
 use crate::engine::parse::parse_rfc3339_micros;
 use crate::engine::predicate::{
-    AndPredicate, FieldEqualsPredicate, FieldRegexPredicate, NotPredicate, Predicate,
+    AndPredicate, FieldEqualsPredicate, FieldRegexPredicate, NotPredicate, OrPredicate, Predicate,
     TimeRangePredicate,
 };
 
@@ -46,36 +53,79 @@ enum Op {
     Le,
 }
 
-/// Compile `source` into a boxed `AndPredicate`. Returns a clear error
+/// Compile `source` into a boxed predicate tree. Returns a clear error
 /// when the input doesn't match the grammar.
 pub fn compile(source: &str) -> Result<Box<dyn Predicate>, String> {
-    let mut and = AndPredicate::new();
     let mut tokens = Tokenizer::new(source);
-    let mut first = true;
-    loop {
-        // After the first clause, require AND between clauses.
-        if !first {
-            match tokens.peek_kw() {
-                Some("AND") => {
-                    tokens.consume_kw("AND");
-                }
-                Some(other) => {
-                    return Err(format!("expected `AND` between clauses, got `{}`", other));
-                }
-                None => break,
-            }
-        }
-        if tokens.is_empty() {
-            if first {
-                return Err("empty query".to_string());
-            }
-            break;
-        }
-        let clause = parse_clause(&mut tokens)?;
-        and.push(clause);
-        first = false;
+    if tokens.is_empty() {
+        return Err("empty query".to_string());
+    }
+    let pred = parse_or(&mut tokens)?;
+    if !tokens.is_empty() {
+        return Err(format!("unexpected trailing input: `{}`", tokens.rest()));
+    }
+    Ok(pred)
+}
+
+/// or_expr := and_expr ("OR" and_expr)*
+fn parse_or(tokens: &mut Tokenizer) -> Result<Box<dyn Predicate>, String> {
+    let first = parse_and(tokens)?;
+    if !matches!(tokens.peek_kw(), Some("OR")) {
+        return Ok(first);
+    }
+    let mut or = OrPredicate::new();
+    or.push(first);
+    while matches!(tokens.peek_kw(), Some("OR")) {
+        tokens.consume_kw("OR");
+        let next = parse_and(tokens)?;
+        or.push(next);
+    }
+    Ok(Box::new(or))
+}
+
+/// and_expr := unary ("AND" unary)*
+fn parse_and(tokens: &mut Tokenizer) -> Result<Box<dyn Predicate>, String> {
+    let first = parse_unary(tokens)?;
+    if !matches!(tokens.peek_kw(), Some("AND")) {
+        return Ok(first);
+    }
+    let mut and = AndPredicate::new();
+    and.push(first);
+    while matches!(tokens.peek_kw(), Some("AND")) {
+        tokens.consume_kw("AND");
+        let next = parse_unary(tokens)?;
+        and.push(next);
     }
     Ok(Box::new(and))
+}
+
+/// unary := "NOT" unary | atom
+fn parse_unary(tokens: &mut Tokenizer) -> Result<Box<dyn Predicate>, String> {
+    if matches!(tokens.peek_kw(), Some("NOT")) {
+        tokens.consume_kw("NOT");
+        let inner = parse_unary(tokens)?;
+        return Ok(Box::new(NotPredicate::new(inner)));
+    }
+    parse_atom(tokens)
+}
+
+/// atom := "(" expr ")" | clause
+fn parse_atom(tokens: &mut Tokenizer) -> Result<Box<dyn Predicate>, String> {
+    tokens.skip_ws();
+    if tokens.peek_byte() == Some(b'(') {
+        tokens.advance(1);
+        let inner = parse_or(tokens)?;
+        tokens.skip_ws();
+        if tokens.peek_byte() != Some(b')') {
+            return Err(format!(
+                "expected `)` to close group, got `{}`",
+                tokens.rest()
+            ));
+        }
+        tokens.advance(1);
+        return Ok(inner);
+    }
+    parse_clause(tokens)
 }
 
 fn parse_clause(tokens: &mut Tokenizer) -> Result<Box<dyn Predicate>, String> {
@@ -149,7 +199,8 @@ impl<'a> Tokenizer<'a> {
         t
     }
 
-    fn is_empty(&self) -> bool {
+    fn is_empty(&mut self) -> bool {
+        self.skip_ws();
         self.pos >= self.src.len()
     }
 
@@ -162,6 +213,16 @@ impl<'a> Tokenizer<'a> {
         while self.pos < bytes.len() && bytes[self.pos].is_ascii_whitespace() {
             self.pos += 1;
         }
+    }
+
+    fn peek_byte(&mut self) -> Option<u8> {
+        self.skip_ws();
+        self.src.as_bytes().get(self.pos).copied()
+    }
+
+    fn advance(&mut self, n: usize) {
+        self.pos += n;
+        self.skip_ws();
     }
 
     /// Peek the next keyword (alphabetic run), uppercased ASCII. Doesn't
@@ -189,6 +250,14 @@ impl<'a> Tokenizer<'a> {
 
     fn read_field(&mut self) -> Result<String, String> {
         self.skip_ws();
+        // Boolean keywords can't be field names — they'd shadow operators
+        // and produce confusing error messages downstream. Surface the
+        // collision here, where we have token context.
+        if let Some(kw) = self.peek_kw() {
+            if matches!(kw, "AND" | "OR" | "NOT") {
+                return Err(format!("unexpected `{}` — expected a field name", kw));
+            }
+        }
         let bytes = self.src.as_bytes();
         let start = self.pos;
         while self.pos < bytes.len() {
@@ -268,9 +337,15 @@ impl<'a> Tokenizer<'a> {
             }
             return Ok(value.to_string());
         }
-        // Bare token — runs until whitespace.
+        // Bare token — runs until whitespace or a closing paren. The
+        // paren stop is what lets `(level=error OR level=warn)` parse
+        // the second `warn` as `warn`, not `warn)`. Use `"warn)"` (a
+        // quoted value) if a literal trailing paren is needed.
         let start = self.pos;
-        while self.pos < bytes.len() && !bytes[self.pos].is_ascii_whitespace() {
+        while self.pos < bytes.len()
+            && !bytes[self.pos].is_ascii_whitespace()
+            && bytes[self.pos] != b')'
+        {
             self.pos += 1;
         }
         Ok(self.src[start..self.pos].to_string())
@@ -324,12 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn bad_operator_after_clause_is_rejected() {
-        let err = compile("level=error OR level=warn").err().unwrap();
-        assert!(err.contains("expected `AND`"));
-    }
-
-    #[test]
     fn invalid_regex_is_rejected() {
         // Unbalanced `[` is invalid.
         let err = compile("msg~/[unbalanced/").err().unwrap();
@@ -343,5 +412,142 @@ mod tests {
         // ts>not-a-date should error.
         let err = compile("ts>not-a-date").err().unwrap();
         assert!(err.contains("parse timestamp"));
+    }
+
+    // --- Boolean composition (OR / NOT / parens) ---
+
+    use crate::engine::format::{FieldCache, LogFormat};
+    use crate::engine::record::{severity, RawRecord, RecordBytes};
+
+    fn rec_with_severity(sev: u8) -> RawRecord {
+        RawRecord {
+            source_id: 0,
+            line_id: 0,
+            ts_micros: 0,
+            severity: sev,
+            bytes: RecordBytes::Owned(Box::from([])),
+        }
+    }
+
+    fn matches(query: &str, line: &[u8]) -> bool {
+        let p = compile(query).expect("query should compile");
+        let r = rec_with_severity(severity::INFO);
+        let mut cache = FieldCache::new(LogFormat::Ndjson, line);
+        p.matches(&r, &mut cache)
+    }
+
+    #[test]
+    fn or_composes() {
+        assert!(compiles("level=error OR level=warn"));
+        let err_line = br#"{"level":"error","msg":"x"}"#;
+        let warn_line = br#"{"level":"warn","msg":"x"}"#;
+        let info_line = br#"{"level":"info","msg":"x"}"#;
+        assert!(matches("level=error OR level=warn", err_line));
+        assert!(matches("level=error OR level=warn", warn_line));
+        assert!(!matches("level=error OR level=warn", info_line));
+    }
+
+    #[test]
+    fn not_negates_clause() {
+        assert!(compiles("NOT level=error"));
+        let err_line = br#"{"level":"error","msg":"x"}"#;
+        let info_line = br#"{"level":"info","msg":"x"}"#;
+        assert!(!matches("NOT level=error", err_line));
+        assert!(matches("NOT level=error", info_line));
+    }
+
+    #[test]
+    fn parens_group() {
+        assert!(compiles("(level=error OR level=warn) AND msg~/boom/"));
+        let line_err_boom = br#"{"level":"error","msg":"boom"}"#;
+        let line_warn_boom = br#"{"level":"warn","msg":"boom"}"#;
+        let line_info_boom = br#"{"level":"info","msg":"boom"}"#;
+        let line_err_quiet = br#"{"level":"error","msg":"quiet"}"#;
+        let q = "(level=error OR level=warn) AND msg~/boom/";
+        assert!(matches(q, line_err_boom));
+        assert!(matches(q, line_warn_boom));
+        assert!(!matches(q, line_info_boom));
+        assert!(!matches(q, line_err_quiet));
+    }
+
+    #[test]
+    fn precedence_not_tighter_than_and() {
+        // `NOT a AND b` parses as `(NOT a) AND b`, not `NOT (a AND b)`.
+        let line = br#"{"level":"info","logger":"app","msg":"x"}"#;
+        // info AND logger=app → false (NOT level=error) AND logger=app → true
+        assert!(matches("NOT level=error AND logger=app", line));
+    }
+
+    #[test]
+    fn precedence_and_tighter_than_or() {
+        // `a OR b AND c` parses as `a OR (b AND c)`.
+        // line is level=info logger=app → first arm fails (level!=error),
+        // second arm: level=info AND logger=app → succeeds.
+        let line = br#"{"level":"info","logger":"app"}"#;
+        assert!(matches(
+            "level=error OR level=info AND logger=app",
+            line
+        ));
+        // logger mismatch breaks the AND arm; OR arm also fails.
+        let line2 = br#"{"level":"info","logger":"other"}"#;
+        assert!(!matches(
+            "level=error OR level=info AND logger=app",
+            line2
+        ));
+    }
+
+    #[test]
+    fn parens_override_default_precedence() {
+        // (a OR b) AND c — distinct from a OR (b AND c).
+        let line = br#"{"level":"warn","logger":"app"}"#;
+        assert!(matches(
+            "(level=error OR level=warn) AND logger=app",
+            line
+        ));
+        // line is logger=other → AND arm fails on both sides.
+        let line2 = br#"{"level":"warn","logger":"other"}"#;
+        assert!(!matches(
+            "(level=error OR level=warn) AND logger=app",
+            line2
+        ));
+    }
+
+    #[test]
+    fn unbalanced_parens_rejected() {
+        let err = compile("(level=error").err().unwrap();
+        assert!(err.contains("expected `)`"));
+    }
+
+    #[test]
+    fn dangling_operator_rejected() {
+        let err = compile("level=error AND").err().unwrap();
+        assert!(err.contains("expected"));
+    }
+
+    #[test]
+    fn double_not_collapses_logically() {
+        // NOT NOT a should match the same things as a.
+        let line = br#"{"level":"error"}"#;
+        assert_eq!(
+            matches("level=error", line),
+            matches("NOT NOT level=error", line)
+        );
+    }
+
+    #[test]
+    fn lowercase_and_is_not_an_operator() {
+        // `and` lowercase is a field name, not the AND keyword. This
+        // protects fields like `and_count` and matches the explicit
+        // case-sensitivity in the grammar doc.
+        let err = compile("level=error and level=warn").err().unwrap();
+        // It tries to read `and` as a field, then expects an operator
+        // after `level=warn`'s second clause — either way it errors.
+        assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn trailing_garbage_rejected() {
+        let err = compile("level=error )").err().unwrap();
+        assert!(err.contains("trailing"));
     }
 }
