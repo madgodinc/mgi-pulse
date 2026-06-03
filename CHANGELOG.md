@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Syslog RFC 5424 format.** `--format=syslog` parses the standard
+  `<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG`
+  shape. PRI's lower 3 bits map to severity (0-2 → fatal, 3 → error,
+  4 → warn, 5-6 → info, 7 → debug); facility is ignored. The header
+  fields project as `host`, `app`, `procid`, `msgid`, `msg`; structured
+  data exposes both bare `SD-ID` membership (`audit=""`) and
+  `SD-ID.key` lookups (`origin.ip=10.0.0.1`). Multi-line records fold
+  when the continuation lacks a `<` opener. Closes #5.
 - **Persistent bookmarks across sessions** for single-file sources.
   Sidecar lives at `$XDG_DATA_HOME/mgi-pulse/bookmarks.json` (default
   `~/.local/share/mgi-pulse/bookmarks.json`). Keyed by inode + size so

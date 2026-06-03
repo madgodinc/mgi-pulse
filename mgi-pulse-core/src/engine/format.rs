@@ -32,6 +32,12 @@ pub enum LogFormat {
     /// `2026-06-01 12:00:00,123 - logger - LEVEL - message`. Reference:
     /// <https://docs.python.org/3/library/logging.html#logrecord-attributes>.
     Python,
+    /// Syslog RFC 5424. Reference:
+    /// <https://datatracker.ietf.org/doc/html/rfc5424>. The PRI digits
+    /// at the start carry both facility (ignored) and severity (lower
+    /// 3 bits → engine severity). Structured-data blocks are exposed
+    /// as flat `SD-ID.key` fields by `project_field`.
+    Syslog,
 }
 
 impl LogFormat {
@@ -53,6 +59,7 @@ impl LogFormat {
             LogFormat::Logfmt => crate::engine::parse_logfmt::ts_and_level(line, stats, fields),
             LogFormat::Edn => crate::engine::parse_edn::ts_and_level(line, stats, fields),
             LogFormat::Python => crate::engine::parse_python::ts_and_level(line, stats, fields),
+            LogFormat::Syslog => crate::engine::parse_syslog::ts_and_level(line, stats, fields),
         }
     }
 
@@ -75,6 +82,9 @@ impl LogFormat {
             }
             LogFormat::Python => {
                 crate::engine::parse_python::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
+            LogFormat::Syslog => {
+                crate::engine::parse_syslog::project_field(line, key).map(std::borrow::Cow::Owned)
             }
         }
     }
@@ -100,6 +110,11 @@ impl LogFormat {
             // `Traceback (...)` and `ValueError: bad` count as
             // continuations of the previous record.
             LogFormat::Python => crate::engine::parse_python::is_continuation(line),
+            // Syslog records always begin with `<PRI>` — a line that
+            // doesn't start with `<` can't open a new record, so it
+            // folds into the previous one (covers multi-line MSG
+            // payloads like embedded stack traces).
+            LogFormat::Syslog => line.first() != Some(&b'<'),
         }
     }
 
@@ -109,9 +124,11 @@ impl LogFormat {
     /// override without touching the predicate machinery.
     pub fn severity_from_level(self, level: &str) -> u8 {
         match self {
-            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn | LogFormat::Python => {
-                severity::from_bytes(level.as_bytes())
-            }
+            LogFormat::Ndjson
+            | LogFormat::Logfmt
+            | LogFormat::Edn
+            | LogFormat::Python
+            | LogFormat::Syslog => severity::from_bytes(level.as_bytes()),
         }
     }
 
@@ -120,9 +137,11 @@ impl LogFormat {
     /// parser.
     pub fn parse_timestamp(self, s: &str) -> Option<i64> {
         match self {
-            LogFormat::Ndjson | LogFormat::Logfmt | LogFormat::Edn | LogFormat::Python => {
-                parse_rfc3339_micros(s)
-            }
+            LogFormat::Ndjson
+            | LogFormat::Logfmt
+            | LogFormat::Edn
+            | LogFormat::Python
+            | LogFormat::Syslog => parse_rfc3339_micros(s),
         }
     }
 
@@ -139,9 +158,17 @@ impl LogFormat {
         let mut ndjson_votes = 0;
         let mut logfmt_votes = 0;
         let mut edn_votes = 0;
+        let mut syslog_votes = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
+                continue;
+            }
+            // Syslog 5424 signature first — `<DIGITS>1 ` is unambiguous
+            // and a syslog line never starts with `{` or contains the
+            // `key=value` shape that would fool logfmt.
+            if crate::engine::parse_syslog::looks_like_syslog(trimmed) {
+                syslog_votes += 1;
                 continue;
             }
             if trimmed.first() == Some(&b'{') && trimmed.last() == Some(&b'}') {
@@ -158,7 +185,13 @@ impl LogFormat {
                 logfmt_votes += 1;
             }
         }
-        if edn_votes > ndjson_votes && edn_votes > logfmt_votes && edn_votes >= 2 {
+        if syslog_votes >= 2
+            && syslog_votes > ndjson_votes
+            && syslog_votes > logfmt_votes
+            && syslog_votes > edn_votes
+        {
+            LogFormat::Syslog
+        } else if edn_votes > ndjson_votes && edn_votes > logfmt_votes && edn_votes >= 2 {
             LogFormat::Edn
         } else if logfmt_votes > ndjson_votes && logfmt_votes >= 2 {
             LogFormat::Logfmt
@@ -384,6 +417,15 @@ mod tests {
     fn detect_defaults_to_ndjson_for_plain_text() {
         let lines: Vec<&[u8]> = vec![b"plain", b"text without kv"];
         assert_eq!(LogFormat::detect(&lines), LogFormat::Ndjson);
+    }
+
+    #[test]
+    fn detect_picks_syslog_when_lines_have_pri_version() {
+        let lines: Vec<&[u8]> = vec![
+            b"<134>1 2026-06-01T12:00:00Z host app 1 - - hi",
+            b"<131>1 2026-06-01T12:00:01Z host app 1 - - oops",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Syslog);
     }
 
     #[test]

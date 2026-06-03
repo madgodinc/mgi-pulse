@@ -109,8 +109,9 @@ when the input is unstructured — you just lose the typed table.
 
 ## Features
 
-- **Formats:** NDJSON, logfmt, EDN, Python `logging` default. Auto-detect for
-  the first three; pass `--format=python` for the fourth.
+- **Formats:** NDJSON, logfmt, EDN, Python `logging` default, syslog RFC 5424.
+  Pass `--format=python` or `--format=syslog` to force; the first three
+  auto-detect.
 - **Compression:** gzip and zstd — detected by magic bytes, not extension.
 - **Multi-line records:** stack traces and continuation lines fold into the
   preceding record. Format-specific: Java/Python tracebacks merge into one
