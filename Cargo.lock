@@ -740,6 +740,7 @@ dependencies = [
  "anyhow",
  "memchr",
  "memmap2",
+ "mgi-pulse-core",
  "serde",
  "serde_json",
  "simd-json",
