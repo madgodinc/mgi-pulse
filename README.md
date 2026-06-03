@@ -251,10 +251,41 @@ mgi-pulse --time-field=eventTime app.log                                # k8s au
 
 ## Status
 
-Hobby project, single developer. The on-disk format is none (nothing is
-persisted), but the key bindings and CLI surface are not stable yet —
-breaking changes between minor versions are possible. Feedback and bug
-reports welcome on the [issue tracker](https://github.com/madgodinc/mgi-pulse/issues).
+Hobby project, single developer.
+
+### Stability promise (post-v1.0)
+
+Until v1.0 the keybindings and CLI flags are best-effort: breaking
+changes are possible between minor versions and will be called out
+in the [CHANGELOG](CHANGELOG.md). Once v1.0 ships, semver applies:
+
+- **CLI flags** that appear in `--help` are stable. Hidden flags
+  (currently `--mouse` legacy, `--dry-run`) are unstable.
+- **Keybindings** in the keyboard reference table above are stable.
+- **`--format=<name>` values** in the error message for an unknown
+  format are stable. Aliases (e.g. `log4j` for `logback`) won't
+  shrink, but new aliases may be added.
+- **Field names** projected by each format (listed in each parser's
+  module docs) are stable.
+- **DSL grammar** is stable. New operators may be added; existing
+  syntax won't change meaning.
+
+What is **explicitly not** stable across major versions:
+
+- The on-disk format of the bookmark sidecar at
+  `~/.local/share/mgi-pulse/bookmarks.json`. A major bump may drop
+  or migrate old entries.
+- The `mgi-pulse-core` library's public surface. Use the binary;
+  the library is internal even though it's published as a workspace
+  member.
+- Performance numbers in [BENCHMARKS.md](BENCHMARKS.md) — they
+  describe the reference release, not a guarantee.
+
+The on-disk format for log files is **none** (nothing is persisted
+beyond bookmarks).
+
+Feedback and bug reports welcome on the
+[issue tracker](https://github.com/madgodinc/mgi-pulse/issues).
 
 ## License
 

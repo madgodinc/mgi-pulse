@@ -8,6 +8,7 @@ publish = false
 description = "Internal measurement tool for mgi-pulse — compare NDJSON ts/level extraction strategies"
 
 [dependencies]
+mgi-pulse-core = { path = "../../mgi-pulse-core" }
 memmap2.workspace = true
 memchr.workspace = true
 serde.workspace = true
@@ -19,3 +20,7 @@ simd-json = { version = "0.14", default-features = false, features = ["serde_imp
 [[bin]]
 name = "parse-bench"
 path = "src/main.rs"
+
+[[bin]]
+name = "indexer-bench"
+path = "src/bin/indexer-bench.rs"
