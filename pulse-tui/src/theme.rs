@@ -4,8 +4,13 @@
 //! only modifiers (bold / dim) so the table stays usable when piped
 //! through `script` to a file, or when the terminal has no ANSI colour.
 //!
-//! Selection precedence: `--theme` flag > `MGI_PULSE_THEME` env var >
-//! `dark`.
+//! Selection precedence: `NO_COLOR` / `TERM=dumb` / non-tty stdout >
+//! `--theme` flag > `MGI_PULSE_THEME` env var > `dark`.
+//!
+//! The first tier is an override (per <https://no-color.org/>): if the
+//! environment asks for no colour, the user's explicit `--theme=dark`
+//! still loses, because the environment knows things the user didn't
+//! type (piped output, dumb terminal, accessibility setting).
 
 use mgi_pulse_core::engine::record::severity;
 use ratatui::style::{Color, Modifier, Style};
@@ -35,6 +40,28 @@ impl Theme {
             }
         }
         Theme::Dark
+    }
+
+    /// Override that wins over `--theme` and `MGI_PULSE_THEME`. Returns
+    /// `Some(NoColor)` if the environment signals "no colour, please"
+    /// in any of the conventional ways. The TUI itself always renders
+    /// to a tty (alt-screen + raw mode), so we read the stdout-tty
+    /// signal at startup before entering raw mode — by the time we're
+    /// in the UI it's too late to ask.
+    pub fn env_override(stdout_is_tty: bool) -> Option<Theme> {
+        // <https://no-color.org/> — any value (including empty) disables.
+        if std::env::var_os("NO_COLOR").is_some() {
+            return Some(Theme::NoColor);
+        }
+        if let Ok(term) = std::env::var("TERM") {
+            if term == "dumb" {
+                return Some(Theme::NoColor);
+            }
+        }
+        if !stdout_is_tty {
+            return Some(Theme::NoColor);
+        }
+        None
     }
 
     /// Style for a severity-coloured cell (the timestamp column inherits
@@ -180,5 +207,86 @@ mod tests {
         // No fg colour, only modifiers.
         assert_eq!(error_style.fg, None);
         assert!(error_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    // env_override reads process-wide env vars (NO_COLOR, TERM). Tests
+    // that mutate them must not run in parallel, hence the shared mutex
+    // and serial section per test.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: tests serialise via ENV_LOCK; no other threads
+            // read these vars while we hold the lock.
+            unsafe {
+                std::env::set_var(key, val);
+            }
+            EnvGuard { key, prev }
+        }
+        fn unset(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            EnvGuard { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_color_env_forces_nocolor() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::set("NO_COLOR", "1");
+        let _g2 = EnvGuard::unset("TERM");
+        // stdout_is_tty=true so only NO_COLOR can trigger.
+        assert_eq!(Theme::env_override(true), Some(Theme::NoColor));
+    }
+
+    #[test]
+    fn no_color_empty_value_still_triggers() {
+        // Per <https://no-color.org/> any value including empty disables colour.
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::set("NO_COLOR", "");
+        let _g2 = EnvGuard::unset("TERM");
+        assert_eq!(Theme::env_override(true), Some(Theme::NoColor));
+    }
+
+    #[test]
+    fn term_dumb_forces_nocolor() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::unset("NO_COLOR");
+        let _g2 = EnvGuard::set("TERM", "dumb");
+        assert_eq!(Theme::env_override(true), Some(Theme::NoColor));
+    }
+
+    #[test]
+    fn non_tty_stdout_forces_nocolor() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::unset("NO_COLOR");
+        let _g2 = EnvGuard::set("TERM", "xterm-256color");
+        assert_eq!(Theme::env_override(false), Some(Theme::NoColor));
+    }
+
+    #[test]
+    fn normal_tty_no_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g1 = EnvGuard::unset("NO_COLOR");
+        let _g2 = EnvGuard::set("TERM", "xterm-256color");
+        assert_eq!(Theme::env_override(true), None);
     }
 }

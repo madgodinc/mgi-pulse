@@ -120,6 +120,10 @@ fn run() -> Result<()> {
         },
         None => theme::Theme::from_env_or_default(),
     };
+    // NO_COLOR / TERM=dumb / non-tty stdout override even an explicit
+    // --theme=dark. Sampled before we touch the terminal because once
+    // we're in alt-screen the tty check is meaningless.
+    let theme = theme::Theme::env_override(std::io::stdout().is_terminal()).unwrap_or(theme);
 
     if cli.files.is_empty() && std::io::stdin().is_terminal() {
         eprintln!(

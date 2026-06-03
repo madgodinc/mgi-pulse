@@ -5,6 +5,21 @@ All notable changes to mgi-pulse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`NO_COLOR` / `TERM=dumb` / non-tty stdout** force the `nocolor` theme
+  regardless of `--theme` and `MGI_PULSE_THEME`. Follows the
+  [no-color.org](https://no-color.org/) convention; the precedence is
+  env-override > `--theme` flag > `MGI_PULSE_THEME` > `dark` default.
+- **`;` opens the DSL prompt** as an alternative to `:`, for keyboard
+  layouts where typing `:` needs an awkward modifier (Russian, some Mac
+  layouts).
+- **`bench/gen-ndjson-bursty.sh`** committed to the repo. Time-varying
+  severity distribution used for the README hero screenshots so the
+  timeline histogram has visible structure instead of a flat strip.
+
 ## [0.2.0] - 2026-06-01
 
 Multi-format pass. NDJSON-only became NDJSON + logfmt + EDN + Python,

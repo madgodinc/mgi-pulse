@@ -123,7 +123,9 @@ when the input is unstructured — you just lose the typed table.
   through them. A yellow star in the gutter marks bookmarked rows.
 - **Themes:** `--theme=dark|light|nocolor` (default dark). `nocolor` uses
   only modifiers so the output stays readable when piped through `script` or
-  on terminals without ANSI colour.
+  on terminals without ANSI colour. `NO_COLOR=1`, `TERM=dumb`, and a
+  non-tty stdout each force `nocolor` regardless of `--theme`
+  ([no-color.org](https://no-color.org/)).
 - **k-way merge** of multiple files by timestamp; line IDs become
   time-sorted in the merged view.
 - **Schema inference** over the first 10k records produces auto-derived
