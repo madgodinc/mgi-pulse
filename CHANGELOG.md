@@ -5,168 +5,190 @@ All notable changes to mgi-pulse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-06-03
 
-### Added
+Big jump from 0.2.0. The intermediate development happened locally
+across what would have been several minor releases — they're
+reconstructed here as "phases" so the scope of each step is
+visible. The version skips to 0.9.0 because the project is now
+**feature-complete for v1.0**; what's left is dogfooding and bug
+fixes from real-world use, not new functionality.
 
-- **Runtime auto-columns cap with `]` / `[`.** Widen / narrow the
-  visible auto-column count without restarting. The cap seeds from
-  the schema's column count on the first press and the status bar
-  shows the new value.
-- **Stats overlay with `?`.** Toggle a sidebar that summarises the
-  current filtered view: total records, per-severity counts (only the
-  non-zero levels are shown), untimed bucket, time span, and the
-  top-8 values of the primary auto-column. Cheap single-pass scan;
-  high-cardinality fields stop bucketing at 1024 distinct values to
-  keep it bounded. New `engine::stats` module owns the math; the
-  `panes::stats` overlay shares the right-side split that the detail
-  pane uses — when both are toggled, stats wins.
-- **JSON-array input adapter.** Files whose first non-whitespace bytes
-  look like `[{` are loaded into memory, flattened to NDJSON, and
-  indexed through the normal stream path. Caps at 256 MB to keep
-  the in-memory step bounded; bigger arrays should pipe through
-  `jq -c '.[]'`. Auto-detected — no `--format` flag needed.
-- **Save filtered view to a file** with `s`. Opens a `save:` prompt;
-  Enter writes the current view's records to the given path
-  (one record per line, newline-terminated), Esc cancels. I/O
-  failures surface in the status bar without disturbing the UI.
-- **Generic regex-extraction format.** `--pattern='...'` (implies
-  `--format=regex`) lets users open any plain-text log by supplying a
-  named-capture regex. `ts`, `level`, and any other capture become
-  projectable fields the DSL and table can read. `ts` is parsed as
-  RFC3339 with prefix-padding (`(?P<ts>\d{4})` works), `level` is
-  mapped to a severity name. Lines that don't match land in the
-  untimed bucket. Per-source pattern stored in `Engine::source_regex`
-  (Arc-shared); `recompute_regex_ts_level` walks the index after
-  ingestion to fill `(ts, severity)` from the pattern. New
-  `FieldCache::with_regex` for predicate-side projection.
-- **Java logback / log4j2 default format.** `--format=logback`
-  (aliases: `log4j`, `java`). Parses the canonical Spring Boot /
-  log4j2 console pattern: `YYYY-MM-DD HH:MM:SS[.,]mmm LEVEL [thread]
-  logger - msg`. Stack-trace continuations (`\tat ...`, `Caused by:
-  ...`, `\t... 12 more`) fold into the previous record. Field
-  projection: `level`, `thread`, `logger`, `msg`, `ts`. Auto-detect
-  goes ahead of generic NDJSON/logfmt.
-- **systemd journalctl JSON format.** `--format=journalctl` (aliases:
-  `journal`, `systemd`). NDJSON under the hood but with
-  `__REALTIME_TIMESTAMP` (microseconds-since-epoch string) for time
-  and `PRIORITY` (syslog 0-7) for severity. Field aliases:
-  `msg` → `MESSAGE`, `host` → `_HOSTNAME`, `unit` → `_SYSTEMD_UNIT`,
-  `ident` → `SYSLOG_IDENTIFIER`. Auto-detect via
-  `__REALTIME_TIMESTAMP`/`PRIORITY` byte-scan, ahead of generic NDJSON.
+What this release covers in one sentence: 7 new log formats (now
+11 total), native `--follow`, timeline scrub, persistent
+bookmarks, a generic regex-extraction fallback for arbitrary
+plain-text logs, plus stats overlay, save-to-file, runtime
+columns, and the tech-debt foundation (CONTRIBUTING, ADRs,
+benchmarks, semver-promise) needed to take v1.0 seriously.
 
-### Changed
+Tests grew from 125 (in 0.2.0) to 244.
 
-- **`looks_like_access` tightened.** The old heuristic ("opening `[`
-  after 3 SP-separated tokens") collided with logback's
-  `[thread-name]` block. Now requires the bracket contents to look
-  like an Apache date (`DD/MMM/YYYY:HH:MM:SS` shape — slashes plus
-  colons), eliminating the false-positive without changing the
-  positive-case behaviour.
+### Phase A — Format coverage
 
-### Added (continued)
+The 0.2.0 → 0.9.0 jump multiplies format support: 4 → 11.
 
-- **Native `--follow` mode.** `mgi-pulse --follow app.log` backfills
-  the existing file synchronously (same path as a static open), then
-  hands off to a background worker that owns a `TailReader` seeked
-  to EOF. The worker streams new records through a bounded
-  crossbeam channel; the UI loop drains the channel on every tick
-  and ingests records into the engine via the new `Engine::ingest_one`.
-  Filters re-evaluate against the growing index — the `+N live`
-  count surfaces in the status bar as records arrive. Inode-based
-  rotation detection is inherited from `TailReader`, so `logrotate`
-  doesn't kill the session. New `SendableProducer` marker trait
-  enforces the `Send` bound where worker code needs it. Closes #6
-  (covering the historical #2 merge: native follow). The huge-file
-  background-index acceptance criterion from #6 is intentionally
-  not addressed here — the historical backfill is still
-  synchronous; see new follow-up issue.
+- **Syslog RFC 5424.** `--format=syslog`. Full header
+  (`<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID
+  STRUCTURED-DATA MSG`). PRI's lower 3 bits map to severity (0-2 →
+  fatal, 3 → error, 4 → warn, 5-6 → info, 7 → debug). Structured
+  data exposes both bare `SD-ID` membership and `SD-ID.key` value
+  projection. Multi-line records fold when continuations lack a
+  `<` opener. Closes #5.
+- **CSV / TSV.** `--format=csv` / `--format=tsv`. RFC 4180
+  quoting. The first row is captured as the column header per
+  source; named columns drive `ts` / `level` extraction and
+  predicate projection. Falls back to positional `_N` (1-based)
+  when no header matches. Closes #9.
+- **Apache / nginx access logs.** `--format=access`. Common Log
+  Format + the Combined extension with `"referer"` and
+  `"user_agent"`. Apache `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` time format
+  is normalised to RFC3339 internally. Severity is synthesised from
+  HTTP status (5xx → error, 4xx → warn, 2xx/3xx → info). Field
+  projection: `ip`/`host`, `user`, `request`, `method`, `uri`,
+  `protocol`, `status`, `bytes`, `referer`, `user_agent`. Closes #4.
+- **Java logback / log4j2 default.** `--format=logback` (aliases:
+  `log4j`, `java`). Parses the canonical Spring Boot / log4j2
+  console pattern. Stack-trace continuations (`\tat ...`, `Caused
+  by: ...`, `\t... 12 more`) fold via the "first byte not a digit"
+  rule.
+- **systemd `journalctl -o json`.** `--format=journalctl` (aliases:
+  `journal`, `systemd`). NDJSON with `__REALTIME_TIMESTAMP` (micros
+  since epoch as a string) for time and `PRIORITY` (syslog 0-7)
+  for severity. Field aliases: `msg` → `MESSAGE`, `host` →
+  `_HOSTNAME`, `unit` → `_SYSTEMD_UNIT`, `ident` → `SYSLOG_IDENTIFIER`.
+- **Generic regex extraction.** `--pattern='regex with named
+  captures'` (implies `--format=regex`). The escape hatch for
+  anything the canonical parsers don't cover — ML runtime logs,
+  custom log4j patterns, plain-text scripts. Named captures `ts`,
+  `level`, and any other group become projectable fields. `ts`
+  parses as RFC3339 with prefix padding; `level` maps to a
+  severity name.
+- **JSON-array input adapter.** Files whose first non-whitespace
+  bytes look like `[{` are loaded into memory, flattened to NDJSON,
+  and indexed through the normal stream path. Caps at 256 MB;
+  bigger arrays should pipe through `jq -c '.[]'`. Auto-detected.
+- **Format auto-detect wired into the CLI.** Running `mgi-pulse
+  foo.log` without `--format` reads a ~16 KiB probe (up to 64
+  lines) from the first file, feeds it to `LogFormat::detect`, and
+  uses the verdict. Probe precedence: syslog > access > logback >
+  journalctl > NDJSON > EDN > logfmt > TSV > CSV.
+- **`looks_like_access` tightened.** Now requires Apache-date shape
+  (`DD/MMM/YYYY:HH:MM:SS` — slashes plus colons) inside the
+  brackets, eliminating false positives on logback's
+  `[thread-name]`.
+
+### Phase B — UI / UX
+
+- **Native `--follow` mode.** `mgi-pulse --follow app.log`
+  backfills the existing file synchronously, then hands off to a
+  background worker that owns a `TailReader` seeked to EOF. The
+  worker streams new records through a bounded crossbeam channel;
+  the UI loop drains the channel on every tick and ingests records
+  via the new `Engine::ingest_one`. Filters re-evaluate against the
+  growing index. Inode-based rotation survives `logrotate`. Closes
+  #6.
 - **Timeline scrub and zoom.** `<` / `>` move a scrub cursor across
   the histogram bins (Shift jumps 10), `+` / `-` zoom the visible
-  range (halve / double, anchored on the cursor), `Enter` applies the
-  selection as a time-range filter on the active view. Single bin if
-  no zoom is active, the full zoom window otherwise. `Esc` cancels
-  the scrub on first press; a second `Esc` (or `Esc` with no scrub)
-  clears all filters. The histogram cache is invalidated on every
-  zoom change so the bars actually reflect the new window. New
-  `View::time_range` field composes with the existing
-  regex/field/severity/DSL filters via AND, and persists in the
-  filter stack until cleared. `Histogram::build_over_range` for the
-  per-window build path. Closes #3.
-- **Apache / nginx access log format** (Common + Combined Log Format).
-  `--format=access` parses the CLF `host - user [date] "request" status
-  bytes` shape and the Combined extension that adds `"referer"
-  "user_agent"`. Apache time format `[DD/MMM/YYYY:HH:MM:SS ±HHMM]` is
-  converted to RFC3339 internally. Severity is synthesised from the
-  HTTP status code: 5xx → error, 4xx → warn, 2xx/3xx → info,
-  everything else → unknown. Auto-detect picks Access when the
-  `[date]`-after-3-tokens signature matches ≥2 lines. Field projection
-  exposes `ip`/`host`, `user`, `logname`, `request`, `method`, `uri`,
-  `protocol`, `status`, `bytes`, `referer`, `user_agent`, `level`.
-  Closes #4.
-- **Format auto-detect wired into the CLI.** Running `mgi-pulse foo.log`
-  without `--format` now reads a ~16 KiB probe (up to 64 lines) from
-  the first file, feeds it to `LogFormat::detect`, and uses the verdict.
-  Stdin still defaults to NDJSON — buffering and replaying the stream
-  to sniff its shape is a separate concern. The probe order in detect
-  is: syslog > NDJSON > EDN > logfmt > NDJSON-fallback > TSV > CSV.
-  CSV/TSV are tested last because their signature (≥2 delimiters
-  outside quotes) is the loosest and would otherwise eat free-form
-  prose with commas. Closes #12.
-- **CSV and TSV input.** `--format=csv` / `--format=tsv`. RFC 4180
-  quoting (`""` escape inside `"`-quoted values, embedded delimiters
-  honoured). First row treated as the column header — column names
-  resolve to typed fields for predicates and the DSL. Falls back to
-  positional addressing via `_N` (1-based) when no header matches.
-  `Engine::capture_csv_headers` captures the header from the first
-  record per CSV/TSV source and re-derives `ts` / `level` for every
-  data row in a second pass. Closes #9.
-- **Syslog RFC 5424 format.** `--format=syslog` parses the standard
-  `<PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG`
-  shape. PRI's lower 3 bits map to severity (0-2 → fatal, 3 → error,
-  4 → warn, 5-6 → info, 7 → debug); facility is ignored. The header
-  fields project as `host`, `app`, `procid`, `msgid`, `msg`; structured
-  data exposes both bare `SD-ID` membership (`audit=""`) and
-  `SD-ID.key` lookups (`origin.ip=10.0.0.1`). Multi-line records fold
-  when the continuation lacks a `<` opener. Closes #5.
+  range (halve / double, anchored on the cursor), `Enter` applies
+  the selection as a time-range filter. `Esc` cancels the scrub on
+  first press; a second `Esc` clears all filters. Closes #3.
+- **DSL boolean composition: `OR`, `NOT`, parentheses.**
+  Recursive-descent parser, conventional precedence (`NOT` >
+  `AND` > `OR`, parens override). Keywords are uppercase ASCII so
+  they never collide with field names like `and_count`. Closes #8.
 - **Persistent bookmarks across sessions** for single-file sources.
-  Sidecar lives at `$XDG_DATA_HOME/mgi-pulse/bookmarks.json` (default
-  `~/.local/share/mgi-pulse/bookmarks.json`). Keyed by inode + size so
-  a rotated or truncated file drops its saved bookmarks automatically.
-  Stdin and merged sources skip persistence (no stable identity).
-  Flush happens once on clean quit; the in-memory bookmarks during the
-  session remain the source of truth. Capped at 256 sources with LRU
+  Sidecar at `$XDG_DATA_HOME/mgi-pulse/bookmarks.json` keyed by
+  inode + size; a rotated or truncated file drops its saved
+  bookmarks. Flush-on-quit. Capped at 256 sources with LRU
   eviction. Closes #7.
-- **DSL boolean composition: `OR`, `NOT`, parentheses.** The parser is
-  now a recursive-descent grammar with conventional precedence (`NOT`
-  binds tightest, then `AND`, then `OR`; parens override). Closes #8.
-  Keywords are uppercase ASCII so they never collide with field names
-  like `and_count`. Examples:
-  - `(level=error OR level=warn) AND NOT logger=health-check`
-  - `level=error AND (msg~/timeout/ OR msg~/refused/)`
-  - `NOT logger=health-check`
-- **`OrPredicate`** in `mgi-pulse-core` — mirror of `AndPredicate`,
-  short-circuits on first match. Empty composition is vacuously false
-  (matches nothing), symmetric to `AndPredicate`'s vacuous true.
-- **`NO_COLOR` / `TERM=dumb` / non-tty stdout** force the `nocolor` theme
-  regardless of `--theme` and `MGI_PULSE_THEME`. Follows the
-  [no-color.org](https://no-color.org/) convention; the precedence is
-  env-override > `--theme` flag > `MGI_PULSE_THEME` > `dark` default.
-  Closes #10.
-- **`;` opens the DSL prompt** as an alternative to `:`, for keyboard
-  layouts where typing `:` needs an awkward modifier (Russian, some Mac
-  layouts).
-- **`bench/gen-ndjson-bursty.sh`** committed to the repo. Time-varying
-  severity distribution used for the README hero screenshots so the
-  timeline histogram has visible structure instead of a flat strip.
+- **Save filtered view to a file** with `s`. Opens a `save:`
+  prompt; Enter writes the current view's records to the given
+  path (one record per line), Esc cancels.
+- **Stats overlay with `?`.** Sidebar summarising the current
+  filtered view: total records, per-severity counts, untimed
+  bucket, time span, top-8 values of the primary auto-column.
+  Single-pass scan, bounded buckets (1024 distinct values max).
+- **Runtime auto-columns cap with `]` / `[`.** Widen / narrow the
+  visible auto-column count without restarting.
+- **`NO_COLOR` / `TERM=dumb` / non-tty stdout** force `nocolor`
+  regardless of `--theme` and `MGI_PULSE_THEME`, per
+  [no-color.org](https://no-color.org/). Closes #10.
+- **`;` opens the DSL prompt** as an alternative to `:`, for
+  keyboard layouts where typing `:` needs an awkward modifier
+  (Russian, some Mac layouts).
+- **`bench/gen-ndjson-bursty.sh`** committed to the repo. Used for
+  the README hero screenshots.
+
+### Phase C — Documentation, benchmarks, project hygiene
+
+Everything needed so v1.0 is a real commitment, not a vibe.
+
+- **CONTRIBUTING.md** — build, layering rules, how to add a
+  format, how to add a UI feature, style notes.
+- **Architecture Decision Records** in `docs/adr/`:
+  - 0001 — No async runtime (std::thread + crossbeam).
+  - 0002 — mmap for files, owned bytes for streams.
+  - 0003 — `tail -F | pulse -` and `--follow` are both supported.
+  - 0004 — Per-source format dispatch + auto-detect heuristic.
+- **BENCHMARKS.md** with the headline 2 GB / ~2.8 s end-to-end
+  number, parser hot-path measurements, and explicit "what is NOT
+  measured" list.
+- **`indexer-bench` binary** in `bench/parse-bench/` — drives the
+  real indexer path against any NDJSON file and reports throughput.
+- **README "Stability promise" section** — lists what becomes
+  stable at v1.0 (CLI flags, keybindings, `--format` values,
+  projection field names, DSL grammar) and what's explicitly NOT
+  (bookmark sidecar on-disk format, `mgi-pulse-core` library
+  surface, perf numbers).
+- **GitHub issue / PR templates** (`.github/ISSUE_TEMPLATE/`)
+  covering bugs, feature requests, and new formats. PR template
+  includes the no-AI-coauthor rule.
+
+### Internals — what moved under the hood
+
+- **`OrPredicate`** mirror of `AndPredicate`, short-circuits on
+  first match.
+- **`Engine::ingest_one`** for single-record append; used by the
+  follow worker.
+- **`Engine::source_headers` / `source_regex`** per-source state for
+  CSV/TSV (header row) and Regex (compiled pattern). Two-pass
+  ingest with `recompute_csv_ts_level` / `recompute_regex_ts_level`
+  fills `(ts, severity)` once the per-source state is bound.
+- **`FieldCache::with_headers` / `with_regex`** extends the
+  predicate-side field projection for stateful formats.
+- **`Histogram::build_over_range`** for zoom-windowed histogram
+  rendering.
+- **`io::SendableProducer`** marker trait for producers that move
+  into worker threads.
 
 ### Changed
 
 - DSL parser rewritten from a flat clause-AND-clause loop into a
-  recursive-descent expression tree. Bare-token values now stop at `)`
-  as well as whitespace, so `(level=error OR level=warn)` parses the
-  inner `warn` as `warn`, not `warn)`. Use a quoted value if a literal
-  trailing paren is needed.
+  recursive-descent expression tree.
+- Bare-token DSL values now stop at `)` as well as whitespace, so
+  `(level=error OR level=warn)` parses correctly.
+
+### Known limitations (carried into v1.0 dogfooding)
+
+- The synchronous backfill path is unchanged — opening a 30 GB
+  file still blocks until the indexer finishes. Filed as a
+  follow-up issue; the channel + `Engine::ingest_one` infrastructure
+  from `--follow` is the foundation for a real background indexer.
+- Plain-text logs without a `--pattern` still fall into less-mode.
+- `--follow` works for a single file only; multi-file follow needs
+  k-way merging on the channel side and isn't done.
+
+### What's left for v1.0
+
+Just dogfooding. The feature set is frozen; what comes next is
+real-world use catching real-world bugs. The semver promise in
+README starts applying once v1.0 ships, which is gated on two
+months of continuous use without a breaking CLI / DSL /
+keybinding change.
+
+## [Unreleased]
+
+- Nothing yet — open against `main`.
 
 ## [0.2.0] - 2026-06-01
 
@@ -320,5 +342,6 @@ Measured on an i5-12400F, 48 GB RAM, ext4 (see
 - Pre-built binaries: Linux musl only at release time. macOS and Windows are
   CI-checked but not shipped.
 
+[0.9.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.9.0
 [0.2.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.2.0
 [0.1.0]: https://github.com/madgodinc/mgi-pulse/releases/tag/v0.1.0
