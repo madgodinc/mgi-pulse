@@ -920,7 +920,11 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                             (KeyCode::Char('/'), _) => {
                                 app.input = Some(Input::Search(String::new()));
                             }
-                            (KeyCode::Char(':'), _) => {
+                            // Both `:` and `;` open the DSL prompt. The
+                            // second binding is a backstop for layouts where
+                            // `:` requires Shift+modifier and is awkward to
+                            // type (RU keyboards, some Mac layouts).
+                            (KeyCode::Char(':') | KeyCode::Char(';'), _) => {
                                 app.input = Some(Input::Dsl(String::new()));
                             }
                             (KeyCode::Char('f'), _) => {
