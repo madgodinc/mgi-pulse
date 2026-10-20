@@ -42,6 +42,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   has setup for thirteen clients; `glama.json` names the maintainer for
   the Glama directory.
 
+- **LLM analysis, off by default.** `mgi-pulse ask "<question>" <sources>`
+  streams an answer from any OpenAI-compatible endpoint (Ollama, LM
+  Studio, llama.cpp, vLLM, cloud APIs). The context is a per-source
+  summary plus the relevant records, folded and cut to a character
+  budget, with secrets masked; `--print-context` shows it. The same
+  model backs `e` (explain the focused record) in the TUI, `/ask` in
+  the Telegram bot, and optional alert summaries.
+
 ### Fixed
 
 - `--follow` on Windows re-read the whole file after every append: the

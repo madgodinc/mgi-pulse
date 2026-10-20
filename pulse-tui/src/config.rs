@@ -35,6 +35,26 @@ pub struct Config {
     #[serde(default)]
     pub rule: Vec<RuleConf>,
     pub telegram: Option<TelegramConf>,
+    pub llm: Option<crate::llm::LlmConf>,
+}
+
+/// Per-user config read when no --config is given (only its [llm]
+/// section and sources are used): `$XDG_CONFIG_HOME/mgi-pulse/pulse.toml`,
+/// `~/.config/mgi-pulse/pulse.toml`, or `%APPDATA%\mgi-pulse\pulse.toml`.
+pub fn user_config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("mgi-pulse").join("pulse.toml"))
+}
+
+/// The user config if it exists; a broken one is an error, not silence.
+pub fn load_user_config() -> Result<Option<Config>> {
+    match user_config_path() {
+        Some(p) if p.exists() => Config::load(&p).map(Some),
+        _ => Ok(None),
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]

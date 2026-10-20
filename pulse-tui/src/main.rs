@@ -7,12 +7,15 @@
 //! - `/regex` filter, `Esc` clears, arrow / page / g / G navigation.
 
 mod app;
+mod ask;
 mod bookmarks_store;
 mod collapse;
 mod config;
+mod explain;
 mod ingest;
 mod inspect;
 mod journal;
+mod llm;
 mod mcp;
 mod panes;
 mod sources;
@@ -139,6 +142,9 @@ enum Command {
     /// Serve read-only log tools to AI agents over MCP (stdio by
     /// default, Streamable HTTP with --http).
     Mcp(mcp::McpArgs),
+    /// Ask a configured LLM (Ollama, LM Studio, llama.cpp, vLLM or any
+    /// OpenAI-compatible API) a question about logs.
+    Ask(ask::AskArgs),
 }
 
 fn main() -> ExitCode {
@@ -157,6 +163,7 @@ fn run() -> Result<()> {
         return match cmd {
             Command::Watch(args) => watch::run(args),
             Command::Mcp(args) => mcp::run(args),
+            Command::Ask(args) => ask::run(args),
         };
     }
 
@@ -382,8 +389,17 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
+    // The explain key reads the model from the environment or the user
+    // config; a broken config only disables it.
+    let llm = config::load_user_config()
+        .and_then(|cfg| llm::Llm::from_config(cfg.as_ref().and_then(|c| c.llm.as_ref())))
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "LLM settings ignored");
+            None
+        });
     let app =
-        app::App::new_with_source(engine, source_label, cli.columns, theme, single_source_path);
+        app::App::new_with_source(engine, source_label, cli.columns, theme, single_source_path)
+            .with_llm(llm);
     // Wire the follow worker if requested. The channel buffer (8192)
     // absorbs short read bursts so the worker doesn't block on a slow
     // UI tick. Worker drops out on producer EOF (e.g. file truncated

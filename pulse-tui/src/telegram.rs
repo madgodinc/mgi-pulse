@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 
 use crate::config::TelegramConf;
 use crate::inspect::{self, Hit, Window};
+use crate::llm::{self, Llm};
 use crate::sources::{SourceKind, SourceSpec};
 use crate::util;
 use crate::watch::{Notice, Notifier, WatchState};
@@ -389,6 +390,18 @@ fn chunk_lines(lines: &[String], max: usize) -> Vec<String> {
     out
 }
 
+fn summarize(llm: &Llm, texts: &[String]) -> Result<String> {
+    let joined = texts.join("\n");
+    let body = util::truncate(&joined, 6000).0;
+    let body = if llm.redact {
+        llm::redact(body)
+    } else {
+        body.to_string()
+    };
+    let out = llm.chat(llm::SYSTEM_SUMMARY, &body, &mut |_| {})?;
+    Ok(util::truncate(out.trim(), 600).0.to_string())
+}
+
 fn send_text(api: &dyn Api, chat: i64, text: &str) -> Result<(), ApiError> {
     let body = json!({"chat_id": chat, "text": text, "disable_web_page_preview": true});
     match api.call("sendMessage", &body) {
@@ -404,6 +417,8 @@ fn send_text(api: &dyn Api, chat: i64, text: &str) -> Result<(), ApiError> {
 }
 
 struct AlertLoop {
+    /// Writes a short summary for batches of three or more alerts.
+    summarizer: Option<Arc<Llm>>,
     api: Arc<dyn Api>,
     chats: Vec<i64>,
     mutes: Arc<Mutes>,
@@ -415,6 +430,7 @@ struct AlertLoop {
 impl AlertLoop {
     fn run(self, rx: Receiver<Notice>) {
         let mut limiters: HashMap<i64, RateLimiter> = HashMap::new();
+        let mut last_summary = 0i64;
         while let Ok(first) = rx.recv() {
             let mut batch = vec![first];
             let deadline = Instant::now() + BATCH_WINDOW;
@@ -430,7 +446,22 @@ impl AlertLoop {
             if batch.is_empty() && lost == 0 {
                 continue;
             }
-            for text in format_alerts(&self.host, &batch, lost) {
+            let mut texts = format_alerts(&self.host, &batch, lost);
+            if let Some(llm) = &self.summarizer {
+                // At most one summary a minute: a model call per batch
+                // would cost more than the alerts are worth.
+                if batch.len() >= 3 && now - last_summary >= 60_000_000 {
+                    last_summary = now;
+                    match summarize(llm, &texts) {
+                        Ok(s) if !s.trim().is_empty() => {
+                            texts[0] = format!("{}\n\nSummary: {}", texts[0], s.trim());
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "alert summary failed"),
+                    }
+                }
+            }
+            for text in texts {
                 for &chat in &self.chats {
                     let lim = limiters
                         .entry(chat)
@@ -476,6 +507,9 @@ pub enum Cmd {
     Unmute {
         rule: Option<String>,
     },
+    Ask {
+        question: String,
+    },
 }
 
 const HELP: &str = "\
@@ -487,7 +521,8 @@ mgi-pulse bot. Read-only.
 /sources - configured sources
 /rules - watch rules and mutes
 /mute <rule|all> [duration] - silence alerts, default 1h
-/unmute [rule|all]";
+/unmute [rule|all]
+/ask <question> - ask the configured model about the logs";
 
 /// `Ok(None)` for text that is not a command (or is addressed to a
 /// different bot in a group).
@@ -561,6 +596,14 @@ pub fn parse_command(text: &str, bot: Option<&str>) -> Result<Option<Cmd>, Strin
         "unmute" => Cmd::Unmute {
             rule: toks.first().map(|s| s.to_string()),
         },
+        "ask" => {
+            if args.is_empty() {
+                return Err("usage: /ask <question>, e.g. /ask why did the api restart?".into());
+            }
+            Cmd::Ask {
+                question: args.to_string(),
+            }
+        }
         other => return Err(format!("unknown command /{other}; /help lists them")),
     };
     Ok(Some(cmd))
@@ -600,6 +643,7 @@ pub struct Bot {
     pub specs: Vec<SourceSpec>,
     pub state: Arc<WatchState>,
     pub mutes: Arc<Mutes>,
+    pub llm: Option<Arc<Llm>>,
     limits: Mutex<HashMap<i64, RateLimiter>>,
 }
 
@@ -619,6 +663,7 @@ impl Bot {
             specs,
             state,
             mutes,
+            llm: None,
             limits: Mutex::default(),
         }
     }
@@ -658,6 +703,13 @@ impl Bot {
         if !allowed {
             return Vec::new();
         }
+        if matches!(cmd, Cmd::Ask { .. }) {
+            // Model answers take a while; show "typing" meanwhile.
+            let _ = self.api.call(
+                "sendChatAction",
+                &json!({"chat_id": chat, "action": "typing"}),
+            );
+        }
         let out = match self.execute(&cmd, now) {
             Ok(o) => o,
             Err(e) => Output::text(format!("error: {e}")),
@@ -688,6 +740,31 @@ impl Bot {
     fn execute(&self, cmd: &Cmd, now: i64) -> Result<Output> {
         match cmd {
             Cmd::Help => Ok(Output::text(HELP.into())),
+            Cmd::Ask { question } => {
+                let Some(llm) = &self.llm else {
+                    bail!("no model configured; see the [llm] section in the README");
+                };
+                let specs = self.readable(None)?;
+                let g = llm::gather(
+                    &specs,
+                    question,
+                    None,
+                    &Window::default(),
+                    llm.max_context,
+                    llm.redact,
+                )?;
+                let answer = llm.chat(
+                    llm::SYSTEM_ASK,
+                    &llm::question_prompt(question, &g.context),
+                    &mut |_| {},
+                )?;
+                Ok(Output::text(format!(
+                    "{}\n\n({}, {} records)",
+                    answer.trim(),
+                    llm.model,
+                    g.records
+                )))
+            }
             Cmd::Sources => Ok(Output::text(
                 self.specs
                     .iter()
@@ -943,7 +1020,9 @@ pub fn start(
     conf: &TelegramConf,
     specs: Vec<SourceSpec>,
     state: Arc<WatchState>,
+    llm: Option<Llm>,
 ) -> Result<Box<dyn Notifier>> {
+    let llm = llm.map(Arc::new);
     let has_allowlist = !conf.allowed_users.is_empty() || !conf.allowed_chats.is_empty();
     let commands = match conf.commands {
         Some(true) if !has_allowlist => {
@@ -969,6 +1048,7 @@ pub fn start(
     } else {
         let (tx, rx) = crossbeam_channel::bounded(1000);
         let alert = AlertLoop {
+            summarizer: llm.clone().filter(|l| l.alert_summary),
             api: api.clone(),
             chats: conf.alert_chats.clone(),
             mutes: mutes.clone(),
@@ -985,6 +1065,7 @@ pub fn start(
     if commands {
         let mut bot = Bot::new(api.clone(), conf, specs, state, mutes);
         bot.username = username.clone();
+        bot.llm = llm;
         let bot = Arc::new(bot);
         std::thread::Builder::new()
             .name("mgi-pulse-tg-commands".into())
@@ -1198,6 +1279,37 @@ mod tests {
         assert!(bot.mutes.is_muted("anything", 1));
         bot.handle_update(&update(42, 42, "/unmute"), 0);
         assert!(!bot.mutes.is_muted("errors", 1));
+    }
+
+    #[test]
+    fn ask_uses_the_model_and_shows_typing() {
+        let f = inspect::tests::fixture("tg-ask", inspect::tests::LOG);
+        let mut bot = bot_with(f.spec.clone());
+        let r = bot.handle_update(&update(42, 42, "/ask what failed?"), 0);
+        assert!(reply_text(&r).contains("no model configured"));
+
+        let (base, server) =
+            crate::llm::tests::mock_openai(vec!["The db retries ", "failed twice."]);
+        let conf = crate::llm::LlmConf {
+            base_url: Some(base),
+            model: Some("tiny".into()),
+            ..Default::default()
+        };
+        bot.llm = Some(Arc::new(Llm::from_config(Some(&conf)).unwrap().unwrap()));
+        let api = Arc::new(FakeApi::default());
+        bot.api = api.clone();
+        let r = bot.handle_update(&update(42, 42, "/ask what failed?"), 0);
+        let t = reply_text(&r);
+        assert!(t.starts_with("The db retries failed twice."), "{t}");
+        assert!(t.ends_with("(tiny, 3 records)"), "{t}");
+        let request = server.join().unwrap();
+        assert!(request.contains("retry 2 failed"));
+        assert!(api
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(m, _)| m == "sendChatAction"));
     }
 
     #[test]

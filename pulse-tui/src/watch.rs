@@ -430,10 +430,12 @@ pub fn run(args: WatchArgs) -> Result<()> {
     let state = Arc::new(WatchState::new(&plan.rules));
     let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
     if let Some(tg) = cfg.telegram.as_ref().filter(|_| !args.no_telegram) {
+        let llm = crate::llm::Llm::from_config(cfg.llm.as_ref())?;
         notifiers.push(crate::telegram::start(
             tg,
             plan.specs.clone(),
             state.clone(),
+            llm,
         )?);
     }
     run_plan(plan, state, notifiers)

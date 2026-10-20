@@ -529,6 +529,11 @@ pub struct App {
     /// Toggled by `?` — when true, an overlay pane renders a Stats
     /// summary over the right half of the layout.
     pub show_stats: bool,
+    /// Configured model for `e`; `None` keeps the key inert.
+    pub llm: Option<std::sync::Arc<crate::llm::Llm>>,
+    /// Open explain pane, if any. Takes the right half over stats and
+    /// detail while it is open.
+    pub explain: Option<crate::explain::Explain>,
 }
 
 /// Ephemeral UI state for the timeline scrub. Lives only while the user
@@ -619,7 +624,14 @@ impl App {
             live_rx: None,
             live_appended: 0,
             show_stats: false,
+            llm: None,
+            explain: None,
         }
+    }
+
+    pub fn with_llm(mut self, llm: Option<crate::llm::Llm>) -> Self {
+        self.llm = llm.map(std::sync::Arc::new);
+        self
     }
 
     /// Attach a live channel to this app. The caller starts the worker
@@ -1016,6 +1028,9 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
         // disconnected channel means the worker exited (file gone,
         // worker panic) and we stop pulling.
         drain_live_channel(app);
+        if let Some(ex) = &mut app.explain {
+            ex.drain();
+        }
 
         // Ensure the active view's histogram is built before the closure
         // takes an immutable borrow of app. Borrow gymnastics: split the
@@ -1184,7 +1199,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                 app.source_label,
                 v.filtered_view.len()
             );
-            if v.detail_open || app.show_stats {
+            if v.detail_open || app.show_stats || app.explain.is_some() {
                 let split = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -1201,9 +1216,11 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     app.theme,
                     &v.bookmarks,
                 );
-                // Stats wins over detail when both are toggled —
-                // user pressed ? more recently, so show that.
-                if app.show_stats {
+                // Explain, then stats, then detail: the most recent
+                // request wins the right half.
+                if let Some(ex) = &app.explain {
+                    crate::panes::explain::render(f, split[1], ex, app.theme);
+                } else if app.show_stats {
                     let top_field = app
                         .engine
                         .schema
@@ -1441,6 +1458,30 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 app.views[app.active_tab].status_msg =
                                     format!("auto-columns cap: {}", next);
                             }
+                            (KeyCode::Char('e'), _) => {
+                                if app.explain.is_some() {
+                                    app.explain = None;
+                                } else if let Some(llm) = app.llm.clone() {
+                                    let v = &app.views[app.active_tab];
+                                    if v.filtered_view.is_empty() {
+                                        app.views[app.active_tab].status_msg =
+                                            "nothing to explain".to_string();
+                                    } else {
+                                        app.explain = Some(crate::explain::Explain::start(
+                                            &app.engine,
+                                            &v.filtered_view,
+                                            v.cursor,
+                                            llm,
+                                        ));
+                                    }
+                                } else {
+                                    app.views[app.active_tab].status_msg = format!(
+                                        "explain needs a model: set {} and {} (see README)",
+                                        crate::llm::URL_ENV,
+                                        crate::llm::MODEL_ENV
+                                    );
+                                }
+                            }
                             (KeyCode::Char('d'), _) => {
                                 let v = app.active();
                                 v.detail_open = !v.detail_open;
@@ -1508,7 +1549,9 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                                 // and any zoom). Second press (or first
                                 // press without scrub) clears all
                                 // filters on the active view.
-                                if app.scrub.is_some() {
+                                if app.explain.is_some() {
+                                    app.explain = None;
+                                } else if app.scrub.is_some() {
                                     app.scrub = None;
                                     // The histogram cache was overwritten
                                     // with a zoomed version on the last

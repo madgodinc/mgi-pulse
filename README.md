@@ -79,6 +79,16 @@ mgi-pulse --follow live.log
 # extension.
 mgi-pulse app.log.gz
 mgi-pulse archive.log.zst
+
+# systemd journal, live (Linux).
+mgi-pulse --journal -u nginx -f
+
+# Headless: print only matching records, repeats collapsed.
+mgi-pulse watch app.log --rule 'level=error AND msg~/timeout/'
+
+# Tools for AI agents over MCP, and a question for a local model.
+mgi-pulse mcp app.log
+mgi-pulse ask "why did the api restart?" app.log
 ```
 
 Inside the TUI: `Tab` cycles severity views, `/` opens regex search, `:`
@@ -175,6 +185,7 @@ Syntax errors surface in the status bar before any scan runs.
 | `<` / `>` | Move the timeline scrub cursor | First press activates scrub; Shift jumps 10 |
 | `+` / `-` | Zoom timeline | Halve / double, anchored on the cursor |
 | `Enter` | Apply scrub as a time-range filter | Single bin if no zoom, the full window otherwise |
+| `e` | Explain the focused record | Needs a configured model, see [Ask a model](#ask-a-model-about-your-logs) |
 | `d` | Detail pane | Pretty-printed JSON; ±5-line context in less-mode |
 | `m` | Severity strict / min-mode | `Warn` vs `Warn+` |
 | `0`–`4` | Severity quick-filter | `0` clears, `1` Error+Fatal, `2` Warn, `3` Info, `4` Debug+Trace |
@@ -537,6 +548,84 @@ HTTP), the official Python SDK 2.3 (stdio and HTTP, protocol 2026-07-28),
 the Python SDK 1.30 handshake path, and mcpo. The other clients above are
 configured from their current documentation.
 
+## Ask a model about your logs
+
+Pulse can hand a question and a sample of the relevant records to a
+language model and print the answer. It talks to any OpenAI-compatible
+chat endpoint, so a model on your own machine works the same as a cloud
+API. Nothing is sent anywhere until you configure a model.
+
+```sh
+# Ollama: ollama pull qwen3:8b
+export MGI_PULSE_LLM_URL=http://localhost:11434/v1
+export MGI_PULSE_LLM_MODEL=qwen3:8b
+
+mgi-pulse ask "why did the api restart?" app.log
+mgi-pulse ask "what changed before the 502s?" --journal -u nginx --since 2h
+kubectl logs deploy/api | mgi-pulse ask "is this one incident or several?" -
+mgi-pulse ask "anything wrong with payments?" app.log --print-context   # show what would be sent
+```
+
+The same two variables point at other servers:
+
+| Server | `MGI_PULSE_LLM_URL` |
+|---|---|
+| Ollama | `http://localhost:11434/v1` |
+| LM Studio | `http://localhost:1234/v1` |
+| llama.cpp `llama-server` | `http://localhost:8080/v1` |
+| vLLM | `http://localhost:8000/v1` |
+| A cloud API | its OpenAI-compatible base URL, with the key in `MGI_PULSE_LLM_KEY` |
+
+What goes to the model, and only that:
+
+- A per-source summary: record counts per level, time span, the five
+  most frequent messages.
+- The records that matter for the question: warnings, errors, and lines
+  that mention a word of the question, or the records of `--query` if
+  you pass one. Repeats are folded into one line with a count; the
+  newest groups that fit the budget are kept.
+- At most 12,000 characters in total (`max_context_chars`).
+- Source names, never file paths.
+
+Before sending, pulse masks emails, `password=`, `token:`, `api_key`
+and similar key/value pairs, bearer and basic credentials, JWTs, URLs
+with a user and password, private key blocks, and well-known key shapes
+(OpenAI, GitHub, Slack, AWS, Google, GitLab, Telegram bot tokens). The
+masking is pattern-based: it catches the common shapes, not every
+secret a log could hold. `--print-context` shows exactly what would
+leave the machine. An API key is never sent over plain http to anything
+but localhost.
+
+The same model powers three more things once it is configured:
+
+- **`e` in the TUI** explains the focused record, using its neighbours
+  and how often its message repeats in the current view. The answer
+  streams into the right-hand pane; `e` or `Esc` closes it.
+- **`/ask <question>`** in the Telegram bot, over every configured source.
+- **Alert summaries**: with `alert_summary = true`, a Telegram batch of
+  three or more alerts gets a two-sentence summary, at most once a
+  minute.
+
+Settings can also live in the config (`--config`, or
+`~/.config/mgi-pulse/pulse.toml`, `%APPDATA%\mgi-pulse\pulse.toml` on
+Windows, which the TUI and `ask` read on their own). Environment
+variables win over the file.
+
+```toml
+[llm]
+base_url = "http://localhost:11434/v1"
+model = "qwen3:8b"
+# api_key_env = "OPENAI_API_KEY"   # default MGI_PULSE_LLM_KEY
+# max_context_chars = 12000
+# max_answer_tokens = 800
+# timeout_secs = 120
+# alert_summary = false
+# redact = true
+```
+
+Reasoning models that think out loud inside `<think>` tags are fine:
+pulse drops that part and shows only the answer.
+
 ## Bookmarks persistence
 
 `b` toggles a bookmark on the focused row, `B` cycles through them. For
@@ -618,6 +707,8 @@ Built on:
 - [regex](https://github.com/rust-lang/regex) — search and `--pattern`
 - [flate2](https://github.com/rust-lang/flate2-rs) / [zstd](https://github.com/gyscos/zstd-rs) — decompression
 - [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam) — follow-worker → UI
+- [ureq](https://github.com/algesten/ureq) for HTTPS to Telegram and model servers
+- [toml](https://github.com/toml-rs/toml) for config files
 
 Inspired by [`lnav`](https://github.com/tstack/lnav) and
 [`toolong`](https://github.com/Textualize/toolong) — same idea, different
