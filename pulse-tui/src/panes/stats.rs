@@ -11,12 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
-pub fn render(
-    f: &mut Frame,
-    area: Rect,
-    stats: &Stats,
-    theme: crate::theme::Theme,
-) {
+pub fn render(f: &mut Frame, area: Rect, stats: &Stats, theme: crate::theme::Theme) {
     let block = Block::default().title(" stats ").borders(Borders::ALL);
     let inner = block.inner(area);
     f.render_widget(block, area);

@@ -197,15 +197,7 @@ fn parse_apache_time(b: &[u8]) -> Option<i64> {
     let mon = month_num(mmm)?;
     let rfc = format!(
         "{}-{:02}-{}T{}:{}:{}{}{}:{}",
-        yyyy,
-        mon,
-        dd,
-        hh,
-        mm,
-        ss,
-        sign as char,
-        tz_hh,
-        tz_mm,
+        yyyy, mon, dd, hh, mm, ss, sign as char, tz_hh, tz_mm,
     );
     parse_rfc3339_micros(&rfc)
 }
@@ -413,10 +405,7 @@ mod tests {
     fn projects_method_uri_protocol() {
         let line = br#"1.2.3.4 - - [01/Jun/2026:12:00:00 +0000] "POST /api/v1/users HTTP/2" 201 0"#;
         assert_eq!(project_field(line, "method").as_deref(), Some("POST"));
-        assert_eq!(
-            project_field(line, "uri").as_deref(),
-            Some("/api/v1/users")
-        );
+        assert_eq!(project_field(line, "uri").as_deref(), Some("/api/v1/users"));
         assert_eq!(project_field(line, "protocol").as_deref(), Some("HTTP/2"));
     }
 

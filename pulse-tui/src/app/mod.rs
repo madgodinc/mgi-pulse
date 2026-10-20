@@ -595,10 +595,8 @@ impl App {
                                 // is somehow shorter than the saved
                                 // line_ids' offsets imply.
                                 let n = view.filtered_view.len() as u64;
-                                let live: Vec<u64> = saved
-                                    .into_iter()
-                                    .filter(|&id| id < n)
-                                    .collect();
+                                let live: Vec<u64> =
+                                    saved.into_iter().filter(|&id| id < n).collect();
                                 view.bookmarks = live;
                             }
                         }
@@ -654,7 +652,13 @@ impl App {
         let tabs: Vec<Vec<u64>> = self.views.iter().map(|v| v.bookmarks.clone()).collect();
 
         let mut sidecar = crate::bookmarks_store::Sidecar::load_or_empty(&sidecar_path);
-        sidecar.upsert(&key, inode, size, tabs, &crate::bookmarks_store::now_rfc3339());
+        sidecar.upsert(
+            &key,
+            inode,
+            size,
+            tabs,
+            &crate::bookmarks_store::now_rfc3339(),
+        );
         if let Err(e) = sidecar.save(&sidecar_path) {
             tracing::warn!(error = %e, "bookmark sidecar save failed");
         }
@@ -1125,8 +1129,7 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                         bot_spans.push(Span::styled(bot, active_style));
                         // Mouse hitbox covers the label row only; outer
                         // frame width is +2 so widen the catch area.
-                        app.tab_hitboxes
-                            .push((col, mid_row, label_w + 2, i));
+                        app.tab_hitboxes.push((col, mid_row, label_w + 2, i));
                         col += label_w + 2;
                     } else {
                         top_spans.push(Span::styled(" ".repeat(inner_w + 2), dim));
@@ -1158,12 +1161,10 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                     None => ("", ""),
                 };
                 if !prompt_label.is_empty() {
-                    let line = Line::from(vec![
-                        Span::styled(
-                            format!(" {} {}_", prompt_label, prompt_buf),
-                            app.theme.hint_bright(),
-                        ),
-                    ]);
+                    let line = Line::from(vec![Span::styled(
+                        format!(" {} {}_", prompt_label, prompt_buf),
+                        app.theme.hint_bright(),
+                    )]);
                     f.render_widget(Paragraph::new(line), outer[prompt_slot]);
                 }
             }
@@ -1532,20 +1533,26 @@ fn run_loop<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut 
                             // selection — single bin if no zoom, the
                             // full zoom range otherwise — as a
                             // TimeRangePredicate on the active view.
-                            (KeyCode::Char('<'), m)
-                            | (KeyCode::Char(','), m)
+                            (KeyCode::Char('<'), m) | (KeyCode::Char(','), m)
                                 if !app.engine.indexes.line.locs.is_empty()
                                     && app.engine.has_timestamps() =>
                             {
-                                let step = if m.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                let step = if m.contains(KeyModifiers::SHIFT) {
+                                    10
+                                } else {
+                                    1
+                                };
                                 handle_scrub_move(app, -step);
                             }
-                            (KeyCode::Char('>'), m)
-                            | (KeyCode::Char('.'), m)
+                            (KeyCode::Char('>'), m) | (KeyCode::Char('.'), m)
                                 if !app.engine.indexes.line.locs.is_empty()
                                     && app.engine.has_timestamps() =>
                             {
-                                let step = if m.contains(KeyModifiers::SHIFT) { 10 } else { 1 };
+                                let step = if m.contains(KeyModifiers::SHIFT) {
+                                    10
+                                } else {
+                                    1
+                                };
                                 handle_scrub_move(app, step);
                             }
                             (KeyCode::Char('+'), _) | (KeyCode::Char('='), _)
@@ -1749,13 +1756,15 @@ mod tests {
         let mut engine = Engine::new();
         for (i, body) in [b"alpha".as_slice(), b"beta", b"gamma"].iter().enumerate() {
             let line_id = i as u64;
-            engine.indexes.line.locs.push(
-                mgi_pulse_core::engine::indexes::LineLoc {
+            engine
+                .indexes
+                .line
+                .locs
+                .push(mgi_pulse_core::engine::indexes::LineLoc {
                     source_id: 0,
                     offset: 0,
                     len: body.len() as u32,
-                },
-            );
+                });
             engine.indexes.time.ts.push(i as i64 * 1_000_000);
             engine.indexes.severity.levels.push(severity::INFO);
             engine.push_owned(line_id, Box::from(*body));
@@ -1789,9 +1798,15 @@ mod tests {
     #[test]
     fn save_filtered_view_rejects_empty_path() {
         let mut engine = Engine::new();
-        engine.indexes.line.locs.push(
-            mgi_pulse_core::engine::indexes::LineLoc { source_id: 0, offset: 0, len: 0 },
-        );
+        engine
+            .indexes
+            .line
+            .locs
+            .push(mgi_pulse_core::engine::indexes::LineLoc {
+                source_id: 0,
+                offset: 0,
+                len: 0,
+            });
         engine.indexes.time.ts.push(0);
         engine.indexes.severity.levels.push(severity::INFO);
         engine.push_owned(0, Box::from(&b""[..]));
@@ -1810,8 +1825,7 @@ mod tests {
     fn time_range_filter_narrows_view() {
         // 10 records at t=0,1,...,9 (seconds). time_range = [3s, 6s]
         // inclusive → keeps records 3,4,5,6 → 4 hits.
-        let records: Vec<(i64, u8)> =
-            (0..10).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let records: Vec<(i64, u8)> = (0..10).map(|i| (i * 1_000_000, severity::INFO)).collect();
         let engine = synthetic_engine(&records);
 
         let mut view = View::new_all(&engine);
@@ -1842,8 +1856,7 @@ mod tests {
 
     #[test]
     fn time_range_cleared_with_filters() {
-        let records: Vec<(i64, u8)> =
-            (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
+        let records: Vec<(i64, u8)> = (0..5).map(|i| (i * 1_000_000, severity::INFO)).collect();
         let engine = synthetic_engine(&records);
 
         let mut view = View::new_all(&engine);

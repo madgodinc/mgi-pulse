@@ -82,10 +82,7 @@ fn parse_header(line: &[u8]) -> Option<Header<'_>> {
     // Thread `[...]`. Logback emits it; if absent, fall back to
     // log4j2-without-thread shape (level then logger directly).
     let (thread, after_thread) = if i < line.len() && line[i] == b'[' {
-        let bracket_end = match line[i..].iter().position(|&b| b == b']') {
-            Some(p) => i + p,
-            None => return None,
-        };
+        let bracket_end = i + line[i..].iter().position(|&b| b == b']')?;
         let thread = &line[i + 1..bracket_end];
         let mut j = bracket_end + 1;
         while j < line.len() && line[j] == b' ' {
@@ -221,7 +218,12 @@ pub fn looks_like_logback(line: &[u8]) -> bool {
     if line.len() < 25 {
         return false;
     }
-    if line[4] != b'-' || line[7] != b'-' || line[10] != b' ' || line[13] != b':' || line[16] != b':' {
+    if line[4] != b'-'
+        || line[7] != b'-'
+        || line[10] != b' '
+        || line[13] != b':'
+        || line[16] != b':'
+    {
         return false;
     }
     // Walk past optional fractional seconds.
@@ -248,14 +250,7 @@ pub fn looks_like_logback(line: &[u8]) -> bool {
     let lvl = &line[lvl_start..i];
     matches!(
         lvl,
-        b"INFO"
-            | b"WARN"
-            | b"WARNING"
-            | b"ERROR"
-            | b"DEBUG"
-            | b"TRACE"
-            | b"FATAL"
-            | b"SEVERE"
+        b"INFO" | b"WARN" | b"WARNING" | b"ERROR" | b"DEBUG" | b"TRACE" | b"FATAL" | b"SEVERE"
     )
 }
 
@@ -309,7 +304,9 @@ mod tests {
     #[test]
     fn stack_trace_is_continuation() {
         assert!(is_continuation(b"\tat com.example.App.main(App.java:42)"));
-        assert!(is_continuation(b"Caused by: java.lang.NullPointerException"));
+        assert!(is_continuation(
+            b"Caused by: java.lang.NullPointerException"
+        ));
         assert!(is_continuation(b"  ... 12 more"));
         // A line that starts a fresh record (with a digit) is not a continuation.
         assert!(!is_continuation(

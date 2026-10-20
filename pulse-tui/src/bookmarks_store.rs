@@ -62,10 +62,8 @@ impl Sidecar {
     pub fn default_path() -> Option<PathBuf> {
         let base = if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
             PathBuf::from(xdg)
-        } else if let Some(home) = std::env::var_os("HOME") {
-            PathBuf::from(home).join(".local/share")
         } else {
-            return None;
+            PathBuf::from(std::env::var_os("HOME")?).join(".local/share")
         };
         Some(base.join("mgi-pulse").join("bookmarks.json"))
     }
@@ -97,8 +95,7 @@ impl Sidecar {
     /// created if it doesn't exist.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
         let bytes = serde_json::to_vec_pretty(self).context("serialize sidecar")?;
         let tmp = path.with_extension("json.tmp");
@@ -248,7 +245,11 @@ mod tests {
 
     fn tempfile_path(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("mgi-pulse-bookmarks-test-{}-{}.json", std::process::id(), name));
+        p.push(format!(
+            "mgi-pulse-bookmarks-test-{}-{}.json",
+            std::process::id(),
+            name
+        ));
         let _ = fs::remove_file(&p);
         p
     }
@@ -293,13 +294,7 @@ mod tests {
     #[test]
     fn restore_matches_inode_and_size() {
         let mut s = Sidecar::default();
-        s.upsert(
-            "/p",
-            42,
-            1000,
-            vec![vec![1, 2, 3]],
-            "2026-06-03T00:00:00Z",
-        );
+        s.upsert("/p", 42, 1000, vec![vec![1, 2, 3]], "2026-06-03T00:00:00Z");
         // Same inode, equal size → restored.
         assert!(s.restore("/p", 42, 1000).is_some());
         // Same inode, grew → restored (append-only).

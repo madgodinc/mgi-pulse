@@ -152,10 +152,10 @@ impl LogFormat {
             LogFormat::Logback => {
                 crate::engine::parse_logback::project_field(line, key).map(std::borrow::Cow::Owned)
             }
-            LogFormat::Journalctl => crate::engine::parse_journalctl::project_field_journal(
-                line, key,
-            )
-            .map(std::borrow::Cow::Owned),
+            LogFormat::Journalctl => {
+                crate::engine::parse_journalctl::project_field_journal(line, key)
+                    .map(std::borrow::Cow::Owned)
+            }
             // Regex projection needs the pattern; FieldCache::with_regex
             // is the proper entry point. Returning None here lets
             // unwired predicates fail closed.

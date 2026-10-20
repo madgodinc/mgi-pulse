@@ -153,10 +153,7 @@ mod tests {
     fn captures_arbitrary_field() {
         // `[^\]]+` for thread because real thread names contain `-`
         // and `:` which `\w` excludes.
-        let re = compile_pattern(
-            r"\[(?P<thread>[^\]]+)\]\s+(?P<level>\w+)\s+(?P<msg>.*)",
-        )
-        .unwrap();
+        let re = compile_pattern(r"\[(?P<thread>[^\]]+)\]\s+(?P<level>\w+)\s+(?P<msg>.*)").unwrap();
         let line = b"[worker-3] INFO hello";
         assert_eq!(
             project_field(line, &re, "thread").as_deref(),
@@ -196,8 +193,14 @@ mod tests {
     #[test]
     fn level_alias_returns_lowercase_known_name() {
         let re = compile_pattern(r"(?P<level>\w+)").unwrap();
-        assert_eq!(project_field(b"ERROR", &re, "level").as_deref(), Some("error"));
-        assert_eq!(project_field(b"info", &re, "level").as_deref(), Some("info"));
+        assert_eq!(
+            project_field(b"ERROR", &re, "level").as_deref(),
+            Some("error")
+        );
+        assert_eq!(
+            project_field(b"info", &re, "level").as_deref(),
+            Some("info")
+        );
     }
 
     #[test]

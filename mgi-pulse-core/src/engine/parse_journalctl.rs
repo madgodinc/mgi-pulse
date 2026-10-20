@@ -98,16 +98,14 @@ pub fn project_field_journal(line: &[u8], key: &str) -> Option<String> {
         "msg" => project_field(line, "MESSAGE").map(strip_quotes_owned),
         "level" => {
             let raw = project_field(line, "PRIORITY")?;
-            let trimmed = trim_quotes(&raw);
+            let trimmed = trim_quotes(raw);
             let sev = map_priority(trimmed.as_bytes());
             Some(severity::name(sev).to_lowercase())
         }
         // Aliases for the common journal fields so users don't have to
         // remember the `_HOSTNAME` shape.
         "host" | "_HOSTNAME" => project_field(line, "_HOSTNAME").map(strip_quotes_owned),
-        "unit" | "_SYSTEMD_UNIT" => {
-            project_field(line, "_SYSTEMD_UNIT").map(strip_quotes_owned)
-        }
+        "unit" | "_SYSTEMD_UNIT" => project_field(line, "_SYSTEMD_UNIT").map(strip_quotes_owned),
         "ident" | "SYSLOG_IDENTIFIER" => {
             project_field(line, "SYSLOG_IDENTIFIER").map(strip_quotes_owned)
         }
@@ -129,8 +127,7 @@ pub fn looks_like_journalctl(line: &[u8]) -> bool {
     // Bound the search so a giant JSON blob doesn't sweep the whole
     // line on every detect tick.
     let window = &line[..line.len().min(512)];
-    contains_subslice(window, b"__REALTIME_TIMESTAMP")
-        || contains_subslice(window, b"\"PRIORITY\"")
+    contains_subslice(window, b"__REALTIME_TIMESTAMP") || contains_subslice(window, b"\"PRIORITY\"")
 }
 
 fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
@@ -173,8 +170,7 @@ mod tests {
 
     #[test]
     fn projects_msg_and_level() {
-        let line =
-            br#"{"__REALTIME_TIMESTAMP":"1000","PRIORITY":"4","MESSAGE":"slow query"}"#;
+        let line = br#"{"__REALTIME_TIMESTAMP":"1000","PRIORITY":"4","MESSAGE":"slow query"}"#;
         assert_eq!(
             project_field_journal(line, "msg").as_deref(),
             Some("slow query")
@@ -204,9 +200,7 @@ mod tests {
         assert!(looks_like_journalctl(
             br#"{"__REALTIME_TIMESTAMP":"1000","MESSAGE":"x"}"#
         ));
-        assert!(looks_like_journalctl(
-            br#"{"PRIORITY":"6","MESSAGE":"x"}"#
-        ));
+        assert!(looks_like_journalctl(br#"{"PRIORITY":"6","MESSAGE":"x"}"#));
     }
 
     #[test]

@@ -484,26 +484,17 @@ mod tests {
         // line is level=info logger=app → first arm fails (level!=error),
         // second arm: level=info AND logger=app → succeeds.
         let line = br#"{"level":"info","logger":"app"}"#;
-        assert!(matches(
-            "level=error OR level=info AND logger=app",
-            line
-        ));
+        assert!(matches("level=error OR level=info AND logger=app", line));
         // logger mismatch breaks the AND arm; OR arm also fails.
         let line2 = br#"{"level":"info","logger":"other"}"#;
-        assert!(!matches(
-            "level=error OR level=info AND logger=app",
-            line2
-        ));
+        assert!(!matches("level=error OR level=info AND logger=app", line2));
     }
 
     #[test]
     fn parens_override_default_precedence() {
         // (a OR b) AND c — distinct from a OR (b AND c).
         let line = br#"{"level":"warn","logger":"app"}"#;
-        assert!(matches(
-            "(level=error OR level=warn) AND logger=app",
-            line
-        ));
+        assert!(matches("(level=error OR level=warn) AND logger=app", line));
         // line is logger=other → AND arm fails on both sides.
         let line2 = br#"{"level":"warn","logger":"other"}"#;
         assert!(!matches(

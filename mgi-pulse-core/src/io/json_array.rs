@@ -22,8 +22,8 @@
 //! heap-allocated keys and values. Then `to_writer` re-serialises
 //! that tree into a second owned buffer.
 //!
-//! Realistic peak RSS = `raw bytes + owned Value tree (~3-5× of raw)
-//! + NDJSON output (~raw)`. A 100 MB array can reach ~500 MB-1 GB
+//! Realistic peak RSS = raw bytes, plus the owned Value tree (~3-5× of
+//! raw), plus the NDJSON output (~raw). A 100 MB array can reach ~500 MB-1 GB
 //! resident before the engine even starts indexing. A 200 MB array
 //! is on the edge of OOM on a 4 GB machine.
 //!
@@ -66,8 +66,8 @@ pub fn looks_like_json_array(bytes: &[u8]) -> bool {
 /// treating the file as raw NDJSON (which will probably error too,
 /// but at the user's chosen pipeline rather than here).
 pub fn flatten_to_ndjson(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let val: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|e| format!("JSON array parse error: {}", e))?;
+    let val: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("JSON array parse error: {}", e))?;
     let arr = match val {
         serde_json::Value::Array(a) => a,
         _ => return Err("top-level value is not an array".to_string()),
@@ -109,8 +109,7 @@ mod tests {
 
     #[test]
     fn flattens_array_to_ndjson_lines() {
-        let input =
-            b"[{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"info\",\"msg\":\"a\"},\
+        let input = b"[{\"ts\":\"2026-06-01T12:00:00Z\",\"level\":\"info\",\"msg\":\"a\"},\
               {\"ts\":\"2026-06-01T12:00:01Z\",\"level\":\"warn\",\"msg\":\"b\"}]";
         let out = flatten_to_ndjson(input).unwrap();
         // Two newline-terminated records.

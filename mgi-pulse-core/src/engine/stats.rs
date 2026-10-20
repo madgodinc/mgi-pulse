@@ -34,16 +34,13 @@ impl Stats {
     /// `top_n` caps the returned list. The bucketing uses a bounded
     /// HashMap with `MAX_BUCKETS` keys — high-cardinality fields
     /// stop counting past that to keep stats cheap.
-    pub fn build(
-        engine: &Engine,
-        view: &[u64],
-        top_field: &str,
-        top_n: usize,
-    ) -> Self {
+    pub fn build(engine: &Engine, view: &[u64], top_field: &str, top_n: usize) -> Self {
         const MAX_BUCKETS: usize = 1024;
 
-        let mut out = Stats::default();
-        out.total = view.len() as u64;
+        let mut out = Stats {
+            total: view.len() as u64,
+            ..Default::default()
+        };
 
         let ts_index = &engine.indexes.time.ts;
         let sevs = &engine.indexes.severity.levels;
@@ -124,7 +121,8 @@ mod tests {
             e.indexes.severity.levels.push(sev);
             e.push_owned(i as u64, Box::from(body));
         }
-        e.source_formats.push(crate::engine::format::LogFormat::Ndjson);
+        e.source_formats
+            .push(crate::engine::format::LogFormat::Ndjson);
         e
     }
 
@@ -170,10 +168,10 @@ mod tests {
         let view: Vec<u64> = (0..3).collect();
         let s = Stats::build(&e, &view, "user", 5);
         assert_eq!(s.top_field, "user");
-        assert_eq!(s.top_values, vec![
-            ("alice".to_string(), 2),
-            ("bob".to_string(), 1),
-        ]);
+        assert_eq!(
+            s.top_values,
+            vec![("alice".to_string(), 2), ("bob".to_string(), 1),]
+        );
     }
 
     #[test]

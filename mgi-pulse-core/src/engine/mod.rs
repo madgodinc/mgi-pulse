@@ -26,9 +26,9 @@ pub mod parse_logfmt;
 pub mod parse_python;
 pub mod parse_regex;
 pub mod parse_syslog;
-pub mod stats;
 pub mod predicate;
 pub mod query;
+pub mod stats;
 
 use std::sync::Arc;
 
@@ -108,7 +108,9 @@ impl Engine {
     /// Look up the compiled regex for a source. `None` for stateless
     /// formats or sources where the pattern hasn't been bound.
     pub fn regex_of(&self, source_id: u32) -> Option<&std::sync::Arc<regex::bytes::Regex>> {
-        self.source_regex.get(source_id as usize).and_then(|p| p.as_ref())
+        self.source_regex
+            .get(source_id as usize)
+            .and_then(|p| p.as_ref())
     }
 
     /// Lookup the format of one source. Falls back to NDJSON if the
@@ -140,8 +142,7 @@ impl Engine {
         // Resize the headers vec to match formats — fill missing slots
         // with None so indexing by source_id is always safe.
         if self.source_headers.len() < self.source_formats.len() {
-            self.source_headers
-                .resize(self.source_formats.len(), None);
+            self.source_headers.resize(self.source_formats.len(), None);
         }
         // Find the first line_id from each CSV/TSV source. For
         // single-source pipelines this is line_id=0; for merge we'd
@@ -187,18 +188,13 @@ impl Engine {
             };
             let bytes = self.line_bytes(line_id).to_vec();
             let mut stats = crate::engine::parse::ParseStats::default();
-            let (ts, sev) = crate::engine::parse_regex::ts_and_level(
-                &bytes,
-                re.as_ref(),
-                &mut stats,
-                None,
-            );
+            let (ts, sev) =
+                crate::engine::parse_regex::ts_and_level(&bytes, re.as_ref(), &mut stats, None);
             self.indexes.time.ts[line_id as usize] = ts;
             self.indexes.severity.levels[line_id as usize] = sev;
             // Same fold-fix as CSV: subtract the indexer's earlier
             // "untimed" mark first.
-            self.indexes.parse_stats.untimed =
-                self.indexes.parse_stats.untimed.saturating_sub(1);
+            self.indexes.parse_stats.untimed = self.indexes.parse_stats.untimed.saturating_sub(1);
             self.indexes.parse_stats.untimed += stats.untimed;
             self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
             self.indexes.parse_stats.json_parse_errors += stats.json_parse_errors;
@@ -253,8 +249,7 @@ impl Engine {
             // Subtract the indexer's earlier "untimed" mark first to
             // avoid double-counting (every CSV row got incremented in
             // the first pass).
-            self.indexes.parse_stats.untimed =
-                self.indexes.parse_stats.untimed.saturating_sub(1);
+            self.indexes.parse_stats.untimed = self.indexes.parse_stats.untimed.saturating_sub(1);
             self.indexes.parse_stats.untimed += stats.untimed;
             self.indexes.parse_stats.ts_parse_errors += stats.ts_parse_errors;
         }

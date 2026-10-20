@@ -63,9 +63,7 @@ pub fn split_record(line: &[u8], delim: Delim) -> Vec<String> {
         if i == line.len() {
             // If we reached EOL after a delimiter, push the empty
             // tail field; otherwise we've already pushed it.
-            if !line.is_empty() && line[line.len() - 1] == d {
-                out.push(String::new());
-            } else if line.is_empty() {
+            if line.is_empty() || line[line.len() - 1] == d {
                 out.push(String::new());
             }
             break;
@@ -283,13 +281,7 @@ mod tests {
     fn missing_ts_column_lands_in_untimed() {
         let headers = vec!["id".to_string(), "level".to_string()];
         let mut stats = ParseStats::default();
-        let (ts, _) = ts_and_level_with_header(
-            b"1,info",
-            Delim::Comma,
-            &headers,
-            &mut stats,
-            None,
-        );
+        let (ts, _) = ts_and_level_with_header(b"1,info", Delim::Comma, &headers, &mut stats, None);
         assert_eq!(ts, TS_UNTIMED);
         assert_eq!(stats.untimed, 1);
     }

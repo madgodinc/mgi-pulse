@@ -46,10 +46,10 @@ use crate::engine::record::{severity, TS_UNTIMED};
 /// useful operator meaning.
 fn map_syslog_severity(sysv: u8) -> u8 {
     match sysv {
-        0 | 1 | 2 => severity::FATAL, // emerg / alert / crit
-        3 => severity::ERROR,         // err
-        4 => severity::WARN,          // warning
-        5 | 6 => severity::INFO,      // notice / info
+        0..=2 => severity::FATAL, // emerg / alert / crit
+        3 => severity::ERROR,     // err
+        4 => severity::WARN,      // warning
+        5 | 6 => severity::INFO,  // notice / info
         7 => severity::DEBUG,
         _ => severity::UNKNOWN,
     }
@@ -490,10 +490,7 @@ mod tests {
             project_field(line, "origin.ip").as_deref(),
             Some("10.0.0.1")
         );
-        assert_eq!(
-            project_field(line, "origin.port").as_deref(),
-            Some("443")
-        );
+        assert_eq!(project_field(line, "origin.port").as_deref(), Some("443"));
     }
 
     #[test]
@@ -533,7 +530,9 @@ mod tests {
 
     #[test]
     fn looks_like_syslog_matches_5424_frame() {
-        assert!(looks_like_syslog(b"<134>1 2026-06-01T12:00:00Z host app 1 - - x"));
+        assert!(looks_like_syslog(
+            b"<134>1 2026-06-01T12:00:00Z host app 1 - - x"
+        ));
         assert!(looks_like_syslog(b"<0>1 - host app 1 - - x"));
     }
 

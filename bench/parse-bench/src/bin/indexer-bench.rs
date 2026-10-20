@@ -25,9 +25,7 @@ use mgi_pulse_core::io::file::FileProducer;
 fn main() -> Result<()> {
     let path: PathBuf = std::env::args()
         .nth(1)
-        .ok_or_else(|| anyhow::anyhow!(
-            "usage: indexer-bench <file.ndjson>"
-        ))?
+        .ok_or_else(|| anyhow::anyhow!("usage: indexer-bench <file.ndjson>"))?
         .into();
 
     let file_size = std::fs::metadata(&path)
@@ -40,8 +38,8 @@ fn main() -> Result<()> {
     );
 
     let mut engine = Engine::new();
-    let mut producer = FileProducer::open(&path, 0)
-        .with_context(|| format!("open {}", path.display()))?;
+    let mut producer =
+        FileProducer::open(&path, 0).with_context(|| format!("open {}", path.display()))?;
     producer = producer.with_format(LogFormat::Ndjson);
     engine.mmaps.push(producer.mmap());
     engine.source_formats.push(LogFormat::Ndjson);
@@ -58,19 +56,13 @@ fn main() -> Result<()> {
     let secs = dt.as_secs_f64();
     let secs_total = dt_total.as_secs_f64();
 
-    println!(
-        "indexed: {} records in {:.3} s",
-        records, secs
-    );
+    println!("indexed: {} records in {:.3} s", records, secs);
     println!(
         "throughput: {:.1} MB/s, {:.1} k records/s",
         mb / secs,
         records as f64 / secs / 1000.0
     );
-    println!(
-        "with schema scan: {:.3} s total",
-        secs_total
-    );
+    println!("with schema scan: {:.3} s total", secs_total);
 
     Ok(())
 }
