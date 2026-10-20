@@ -15,6 +15,7 @@ use mgi_pulse_core::engine::predicate::Predicate;
 use mgi_pulse_core::engine::record::{severity, RawRecord, RecordBytes, TS_UNTIMED};
 use mgi_pulse_core::engine::Engine;
 use mgi_pulse_core::io::compressed::Compression;
+use serde_json::{json, Value};
 
 use crate::journal;
 use crate::sources::{message_of, SourceKind, SourceSpec};
@@ -31,9 +32,65 @@ pub struct Hit {
     pub severity: u8,
     pub msg: String,
     pub line: String,
+    /// Named fields shown instead of the raw line (journal entries,
+    /// whose raw JSON is mostly bookkeeping).
+    pub fields: Vec<(&'static str, String)>,
 }
 
+/// Journal fields worth showing, under their short alias.
+const JOURNAL_FIELDS: [(&str, &str); 4] = [
+    ("unit", "_SYSTEMD_UNIT"),
+    ("ident", "SYSLOG_IDENTIFIER"),
+    ("pid", "_PID"),
+    ("host", "_HOSTNAME"),
+];
+
 impl Hit {
+    pub fn new(source: &str, fmt: LogFormat, ts_micros: i64, severity: u8, line: &[u8]) -> Hit {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let fields = if fmt == LogFormat::Journalctl {
+            JOURNAL_FIELDS
+                .iter()
+                .filter_map(|(alias, key)| {
+                    fmt.project_field(line, key)
+                        .map(|v| (*alias, v.into_owned()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Hit {
+            source: source.to_string(),
+            ts_micros,
+            severity,
+            msg: message_of(fmt, line),
+            line: String::from_utf8_lossy(line).into_owned(),
+            fields,
+        }
+    }
+
+    pub fn to_json(&self, max_line: usize) -> Value {
+        let (msg, msg_cut) = util::truncate(&self.msg, max_line);
+        let mut v = json!({
+            "source": self.source,
+            "ts": (self.ts_micros != TS_UNTIMED).then(|| util::format_ts(self.ts_micros)),
+            "level": severity::name(self.severity),
+            "msg": msg,
+        });
+        let mut cut = msg_cut;
+        if self.fields.is_empty() {
+            let (line, line_cut) = util::truncate(&self.line, max_line);
+            v["line"] = json!(line);
+            cut |= line_cut;
+        } else {
+            for (k, val) in &self.fields {
+                v[*k] = json!(val);
+            }
+        }
+        v["truncated"] = json!(cut);
+        v
+    }
+
     /// `12:00:02 error api upstream timeout`, single line.
     pub fn short(&self) -> String {
         let ts = if self.ts_micros == TS_UNTIMED {
@@ -112,13 +169,13 @@ fn hit_of(engine: &Engine, spec: &SourceSpec, line_id: u64) -> Hit {
     let loc = &engine.indexes.line.locs[line_id as usize];
     let bytes = engine.line_bytes(line_id);
     let fmt = engine.format_of(loc.source_id);
-    Hit {
-        source: spec.name.clone(),
-        ts_micros: engine.indexes.time.get(line_id).unwrap_or(TS_UNTIMED),
-        severity: engine.indexes.severity.get(line_id).unwrap_or(0),
-        msg: message_of(fmt, bytes),
-        line: String::from_utf8_lossy(bytes).into_owned(),
-    }
+    Hit::new(
+        &spec.name,
+        fmt,
+        engine.indexes.time.get(line_id).unwrap_or(TS_UNTIMED),
+        engine.indexes.severity.get(line_id).unwrap_or(0),
+        bytes,
+    )
 }
 
 /// Matching records in time order; only the newest `limit` are kept,
@@ -220,13 +277,7 @@ fn is_compressed(path: &Path) -> Result<bool> {
 fn hit_from_line(spec: &SourceSpec, fmt: LogFormat, line: &[u8]) -> Hit {
     let mut stats = Default::default();
     let (ts, sev) = fmt.parse_ts_level(line, &mut stats, None);
-    Hit {
-        source: spec.name.clone(),
-        ts_micros: ts,
-        severity: sev,
-        msg: message_of(fmt, line),
-        line: String::from_utf8_lossy(line).into_owned(),
-    }
+    Hit::new(&spec.name, fmt, ts, sev, line)
 }
 
 /// Read backwards in 64 KiB steps until `n` complete lines are in hand.
@@ -275,6 +326,21 @@ pub struct SourceStats {
     pub top_loggers: Vec<(String, u64)>,
     /// Normalised message, a sample of it, count.
     pub top_messages: Vec<(String, u64)>,
+}
+
+impl SourceStats {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "source": self.source,
+            "total": self.total,
+            "by_level": self.by_level.iter().map(|(k, v)| (k.to_string(), json!(v))).collect::<serde_json::Map<_, _>>(),
+            "first_ts": self.first_ts.map(util::format_ts),
+            "last_ts": self.last_ts.map(util::format_ts),
+            "logger_field": self.logger_field,
+            "top_loggers": self.top_loggers.iter().map(|(k, v)| json!({"name": k, "count": v})).collect::<Vec<_>>(),
+            "top_messages": self.top_messages.iter().map(|(k, v)| json!({"msg": k, "count": v})).collect::<Vec<_>>(),
+        })
+    }
 }
 
 const LOGGER_FIELDS: [&str; 5] = ["logger", "ident", "unit", "module", "component"];
@@ -454,6 +520,25 @@ pub mod tests {
         assert_eq!(s.logger_field, Some("logger"));
         assert_eq!(s.top_loggers[0], ("web".to_string(), 3));
         assert_eq!(s.top_messages[0], ("retry 1 failed".to_string(), 2));
+    }
+
+    #[test]
+    fn journal_hits_show_named_fields_not_raw_json() {
+        let line = br#"{"__CURSOR":"s=1","__REALTIME_TIMESTAMP":"1","PRIORITY":"3","MESSAGE":"oom","_SYSTEMD_UNIT":"api.service","_PID":"42","SYSLOG_IDENTIFIER":"api"}"#;
+        let h = Hit::new("journal", LogFormat::Journalctl, 1, severity::ERROR, line);
+        let v = h.to_json(1000);
+        assert_eq!(v["msg"], "oom");
+        assert_eq!(v["unit"], "api.service");
+        assert_eq!(v["pid"], "42");
+        assert!(v.get("line").is_none());
+        let plain = Hit::new(
+            "app",
+            LogFormat::Ndjson,
+            1,
+            severity::INFO,
+            b"{\"msg\":\"x\"}\r",
+        );
+        assert_eq!(plain.to_json(1000)["line"], "{\"msg\":\"x\"}");
     }
 
     #[test]

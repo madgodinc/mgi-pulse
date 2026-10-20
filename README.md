@@ -385,6 +385,158 @@ never appears in the config, in logs or in error messages, and pulse
 refuses a `token = ...` line in the config file. A token file readable
 by other users gets a warning.
 
+## MCP server for AI agents
+
+`mgi-pulse mcp` gives an AI agent read-only tools over the log sources you
+name when you start it. The agent never passes a path: it picks a source
+by name from `list_sources`, so it reads only what you configured, and it
+can't run anything.
+
+| Tool | What it returns |
+|---|---|
+| `list_sources` | Configured sources and their names |
+| `tail` | Last N records of one source |
+| `search` | Records matching a query DSL expression, optionally in a time window |
+| `errors` | Error and fatal records, last hour by default |
+| `stats` | Counts per level, time span, top loggers and most frequent messages |
+| `watch_once` | Waits up to two minutes for new records matching a rule |
+
+Answers are capped at 200 records with lines cut at 1000 characters, and
+every answer says how many records matched in total and whether it was
+truncated.
+
+```sh
+mgi-pulse mcp /var/log/api/app.ndjson /var/log/nginx/error.log
+mgi-pulse mcp --journal -u nginx -u api
+mgi-pulse mcp --config pulse.toml              # the [[source]] list of a watch config
+mgi-pulse mcp --http 127.0.0.1:8765 app.log    # Streamable HTTP on /mcp instead of stdio
+```
+
+The server speaks MCP over stdio by default and over Streamable HTTP with
+`--http`. It answers both the `initialize` handshake of protocol versions
+2024-11-05 to 2025-11-25 and the stateless 2026-07-28 revision
+(`server/discover`), so older and newer clients both work. It writes
+nothing but protocol messages to stdout.
+
+`--http` binds to the address you give it. On anything other than
+loopback it refuses to start without a bearer token in
+`MGI_PULSE_MCP_TOKEN` (or the variable named by `--token-env`). Browser
+`Origin` headers other than localhost get 403 unless allowed with
+`--allow-origin`.
+
+### Client setup
+
+The examples serve one file and the `nginx` journal unit; put your own
+sources after `mcp`. GUI clients often start without your shell's PATH,
+so use the absolute path to the binary there (`which mgi-pulse`, or
+`where mgi-pulse` on Windows).
+
+**Claude Code**
+
+```sh
+claude mcp add --transport stdio --scope user pulse -- mgi-pulse mcp /var/log/app.ndjson --journal -u nginx
+```
+
+**Claude Desktop**: `claude_desktop_config.json` (macOS
+`~/Library/Application Support/Claude/`, Windows `%APPDATA%\Claude\`).
+Cursor (`~/.cursor/mcp.json` or `.cursor/mcp.json`), Windsurf / Devin
+Desktop (`~/.config/devin/mcp_config.json`, Windows
+`%APPDATA%\devin\mcp_config.json`), Cline (MCP Servers panel, Configure
+MCP Servers), LM Studio (Program tab, Install, Edit mcp.json) and Gemini
+CLI (`~/.gemini/settings.json`) take the same block:
+
+```json
+{
+  "mcpServers": {
+    "pulse": {
+      "command": "/usr/local/bin/mgi-pulse",
+      "args": ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+    }
+  }
+}
+```
+
+**VS Code** (Copilot agent mode): `.vscode/mcp.json` in the workspace, or
+**MCP: Open User Configuration** for every workspace.
+
+```json
+{
+  "servers": {
+    "pulse": {
+      "type": "stdio",
+      "command": "mgi-pulse",
+      "args": ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+    }
+  }
+}
+```
+
+**OpenAI Codex CLI**: `~/.codex/config.toml`, or
+`codex mcp add pulse -- mgi-pulse mcp /var/log/app.ndjson`.
+
+```toml
+[mcp_servers.pulse]
+command = "mgi-pulse"
+args = ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+```
+
+**Zed**: `settings.json`.
+
+```json
+{
+  "context_servers": {
+    "pulse": {
+      "command": "mgi-pulse",
+      "args": ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+    }
+  }
+}
+```
+
+**Continue**: a block file such as `.continue/mcpServers/pulse.yaml`.
+
+```yaml
+name: pulse
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: pulse
+    type: stdio
+    command: mgi-pulse
+    args: ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+```
+
+**Goose**: `~/.config/goose/config.yaml` (Windows
+`%APPDATA%\Block\goose\config\config.yaml`).
+
+```yaml
+extensions:
+  pulse:
+    type: stdio
+    name: pulse
+    enabled: true
+    cmd: mgi-pulse
+    args: ["mcp", "/var/log/app.ndjson", "--journal", "-u", "nginx"]
+    timeout: 300
+```
+
+**Open WebUI**: through the [mcpo](https://github.com/open-webui/mcpo)
+proxy, which turns the tools into an OpenAPI server you add under
+Settings, Tools:
+
+```sh
+uvx mcpo --port 8000 --api-key "change-me" -- mgi-pulse mcp /var/log/app.ndjson
+```
+
+Clients that connect to a URL instead of starting a process can use
+`--http`: point them at `http://127.0.0.1:8765/mcp`, with an
+`Authorization: Bearer ...` header when a token is set.
+
+Tested with Claude Code, the MCP Inspector CLI (TypeScript SDK, stdio and
+HTTP), the official Python SDK 2.3 (stdio and HTTP, protocol 2026-07-28),
+the Python SDK 1.30 handshake path, and mcpo. The other clients above are
+configured from their current documentation.
+
 ## Bookmarks persistence
 
 `b` toggles a bookmark on the focused row, `B` cycles through them. For

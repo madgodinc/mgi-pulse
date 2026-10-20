@@ -31,6 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and error text. Plain Bot API over HTTPS with long polling (ureq +
   rustls).
 
+- **MCP server.** `mgi-pulse mcp [FILE ...] [--journal -u UNIT]
+  [--config FILE] [--http ADDR]` serves read-only tools to AI agents:
+  `list_sources`, `tail`, `search`, `errors`, `stats`, `watch_once`.
+  Sources are addressed by name only; answers are capped and flag
+  truncation. Dual-era: the `initialize` handshake of 2024-11-05 to
+  2025-11-25 and the stateless 2026-07-28 revision (`server/discover`,
+  per-request `_meta`, `resultType`). stdio by default; Streamable HTTP
+  with Origin checks and a bearer token required off loopback. README
+  has setup for thirteen clients; `glama.json` names the maintainer for
+  the Glama directory.
+
 ### Fixed
 
 - `--follow` on Windows re-read the whole file after every append: the

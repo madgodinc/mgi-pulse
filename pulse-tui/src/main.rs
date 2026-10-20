@@ -13,6 +13,7 @@ mod config;
 mod ingest;
 mod inspect;
 mod journal;
+mod mcp;
 mod panes;
 mod sources;
 mod telegram;
@@ -135,6 +136,9 @@ enum Command {
     /// Print only records that match rules, with repeats collapsed.
     /// Runs without a terminal; exits non-zero only on fatal errors.
     Watch(watch::WatchArgs),
+    /// Serve read-only log tools to AI agents over MCP (stdio by
+    /// default, Streamable HTTP with --http).
+    Mcp(mcp::McpArgs),
 }
 
 fn main() -> ExitCode {
@@ -152,6 +156,7 @@ fn run() -> Result<()> {
     if let Some(cmd) = cli.command {
         return match cmd {
             Command::Watch(args) => watch::run(args),
+            Command::Mcp(args) => mcp::run(args),
         };
     }
 
