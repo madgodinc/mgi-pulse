@@ -34,6 +34,34 @@ pub struct Config {
     pub source: Vec<SourceConf>,
     #[serde(default)]
     pub rule: Vec<RuleConf>,
+    pub telegram: Option<TelegramConf>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelegramConf {
+    /// Environment variable holding the bot token. Default
+    /// `MGI_PULSE_TELEGRAM_TOKEN`.
+    pub token_env: Option<String>,
+    /// File holding the bot token (first line).
+    pub token_file: Option<PathBuf>,
+    /// Accepted only to refuse it with a pointer to the safe options.
+    pub token: Option<String>,
+    /// Chats that receive watch alerts.
+    #[serde(default)]
+    pub alert_chats: Vec<i64>,
+    /// Users allowed to send commands, in any chat with the bot.
+    #[serde(default)]
+    pub allowed_users: Vec<i64>,
+    /// Chats where every member may send commands.
+    #[serde(default)]
+    pub allowed_chats: Vec<i64>,
+    /// Alert messages per chat per minute. Default 20.
+    pub max_per_minute: Option<u32>,
+    /// Answer commands. Default true when an allowlist is set.
+    pub commands: Option<bool>,
+    /// Bot API base URL, for a self-hosted Bot API server.
+    pub api_base: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -328,6 +328,63 @@ query = "level=error OR level=fatal"
 mgi-pulse watch --config pulse.toml
 ```
 
+## Telegram
+
+Watch mode can send its matches to Telegram and answer a few read-only
+commands, through a bot you create yourself. Nothing goes through a
+third-party service: pulse talks to the Bot API over HTTPS with long
+polling, so it needs no open port.
+
+Setup:
+
+1. Message [@BotFather](https://t.me/BotFather), send `/newbot`, and keep
+   the token it gives you.
+2. Send your new bot any message, then find your numeric user id, for
+   example with [@userinfobot](https://t.me/userinfobot). For a group,
+   add the bot to it; group ids are negative.
+3. Put the token in the environment (or in a file, see below) and add a
+   `[telegram]` section to the watch config.
+
+```sh
+export MGI_PULSE_TELEGRAM_TOKEN='123456789:AA...'
+mgi-pulse watch --config pulse.toml
+```
+
+```toml
+[telegram]
+alert_chats = [123456789]       # who receives alerts
+allowed_users = [123456789]     # who may send commands
+# allowed_chats = [-1001234567] # every member of these chats may
+# token_file = "/etc/mgi-pulse/tg-token"   # instead of the env variable
+# token_env = "MY_BOT_TOKEN"    # a different variable name
+# max_per_minute = 20           # alert messages per chat
+```
+
+Alerts are the same lines watch prints, batched for two seconds into one
+message and rate-limited per chat. Repeats arrive as one `+41 more in
+10m` line, as on the terminal. A `[[rule]]` with `alert = false` prints
+but never alerts.
+
+Commands answer only senders listed in `allowed_users` or chats listed
+in `allowed_chats`. Everyone else gets no reply at all, and with both
+lists empty the bot does not read messages. Commands are read-only and
+address sources by their configured name, so a chat can't ask for a
+path outside the config or run anything:
+
+| Command | Answer |
+|---|---|
+| `/tail [n] [source]` | Last `n` lines (default 20, at most 200) |
+| `/errors [age] [source]` | Errors and fatals of the last hour, or `age` |
+| `/grep <query>` | Query DSL over every source, newest 50 matches |
+| `/stats [age]` | Per-source level counts and top messages, rule hit counts |
+| `/sources`, `/rules` | What is configured |
+| `/mute <rule\|all> [duration]`, `/unmute [rule\|all]` | Silence alerts for a while (default 1h) |
+
+Answers longer than a screen arrive as a `.txt` attachment. The token
+never appears in the config, in logs or in error messages, and pulse
+refuses a `token = ...` line in the config file. A token file readable
+by other users gets a warning.
+
 ## Bookmarks persistence
 
 `b` toggles a bookmark on the focused row, `B` cycles through them. For

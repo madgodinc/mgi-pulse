@@ -40,6 +40,15 @@ pub struct SourceSpec {
 }
 
 impl SourceSpec {
+    pub fn describe(&self) -> String {
+        match &self.kind {
+            SourceKind::File(p) => format!("file {}", p.display()),
+            SourceKind::Journal(u) if u.is_empty() => "journal, all units".into(),
+            SourceKind::Journal(u) => format!("journal {}", u.join(", ")),
+            SourceKind::Stdin => "stdin".into(),
+        }
+    }
+
     /// Format to parse a file with: forced, else sniffed, else NDJSON.
     pub fn file_format(&self, path: &PathBuf) -> LogFormat {
         self.format.unwrap_or_else(|| {

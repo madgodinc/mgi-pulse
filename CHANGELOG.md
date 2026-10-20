@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes sources and rules from a TOML file with `--config`. Works on
   files, stdin and the journal; `--once` scans and exits.
 
+- **Telegram alerts and commands.** A `[telegram]` config section sends
+  watch matches to chats through the user's own bot (batched, rate
+  limited per chat, mutable per rule) and answers read-only commands
+  (`/tail`, `/errors`, `/grep`, `/stats`, `/sources`, `/rules`,
+  `/mute`, `/unmute`) from allowlisted users or chats only. The token
+  comes from an environment variable or a file and is kept out of logs
+  and error text. Plain Bot API over HTTPS with long polling (ureq +
+  rustls).
+
 ### Fixed
 
 - `--follow` on Windows re-read the whole file after every append: the

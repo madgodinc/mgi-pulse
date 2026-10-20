@@ -68,6 +68,22 @@ pub struct WatchArgs {
     /// Skip records older than this: an age (`2h`) or RFC3339 time.
     #[arg(long, value_name = "WHEN")]
     pub since: Option<String>,
+
+    /// Ignore the [telegram] section of the config.
+    #[arg(long)]
+    pub no_telegram: bool,
+}
+
+impl WatchState {
+    pub fn new(rules: &[Rule]) -> Self {
+        WatchState {
+            rules: rules
+                .iter()
+                .map(|r| (r.name.clone(), r.query.clone()))
+                .collect(),
+            matches: Mutex::default(),
+        }
+    }
 }
 
 pub struct Rule {
@@ -159,6 +175,8 @@ pub trait Notifier: Send {
 /// Live counters that remote commands can read.
 #[derive(Default)]
 pub struct WatchState {
+    /// Rule names and queries, in priority order.
+    pub rules: Vec<(String, String)>,
     pub matches: Mutex<HashMap<String, u64>>,
 }
 
@@ -174,8 +192,13 @@ pub struct Watcher {
 }
 
 impl Watcher {
-    pub fn new(rules: Vec<Rule>, names: Vec<String>, window: Duration, replay: bool) -> Self {
-        let state = Arc::new(WatchState::default());
+    pub fn new(
+        rules: Vec<Rule>,
+        names: Vec<String>,
+        window: Duration,
+        replay: bool,
+        state: Arc<WatchState>,
+    ) -> Self {
         Self {
             rules,
             names,
@@ -404,15 +427,28 @@ pub fn load_config(path: Option<&PathBuf>) -> Result<(Config, Option<PathBuf>)> 
 pub fn run(args: WatchArgs) -> Result<()> {
     let (cfg, dir) = load_config(args.config.as_ref())?;
     let plan = plan(&args, &cfg, dir.as_deref())?;
-    run_plan(plan, Vec::new())
+    let state = Arc::new(WatchState::new(&plan.rules));
+    let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+    if let Some(tg) = cfg.telegram.as_ref().filter(|_| !args.no_telegram) {
+        notifiers.push(crate::telegram::start(
+            tg,
+            plan.specs.clone(),
+            state.clone(),
+        )?);
+    }
+    run_plan(plan, state, notifiers)
 }
 
-pub fn run_plan(plan: Plan, notifiers: Vec<Box<dyn Notifier>>) -> Result<()> {
+pub fn run_plan(
+    plan: Plan,
+    state: Arc<WatchState>,
+    notifiers: Vec<Box<dyn Notifier>>,
+) -> Result<()> {
     let names: Vec<String> = plan.specs.iter().map(|s| s.name.clone()).collect();
     for r in &plan.rules {
         tracing::info!(rule = %r.name, query = %r.query, "watch rule");
     }
-    let mut watcher = Watcher::new(plan.rules, names, plan.window, !plan.feed.follow);
+    let mut watcher = Watcher::new(plan.rules, names, plan.window, !plan.feed.follow, state);
     let feed = Feed::start(&plan.specs, plan.feed)?;
     let mut live = plan.specs.len();
     let stdout = std::io::stdout();
@@ -481,6 +517,7 @@ mod tests {
             vec!["api".into(), "db".into()],
             Duration::from_secs(600),
             false,
+            Arc::default(),
         )
     }
 
@@ -542,6 +579,7 @@ mod tests {
             vec!["api".into()],
             Duration::from_secs(600),
             true,
+            Arc::default(),
         );
         let a = r#"{"ts":"2026-06-01T12:00:00Z","level":"error","msg":"x"}"#;
         let b = r#"{"ts":"2026-06-01T12:05:00Z","level":"error","msg":"x"}"#;
@@ -599,6 +637,7 @@ mod tests {
             from_start: false,
             once: true,
             since: None,
+            no_telegram: false,
         };
         let p = plan(&args, &cfg, None).unwrap();
         assert_eq!(p.specs.len(), 2);

@@ -28,6 +28,8 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml = { version = "0.8", default-features = false, features = ["parse"] }
+# Telegram Bot API over HTTPS. rustls keeps the musl build free of OpenSSL.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 assert_cmd = "2"
