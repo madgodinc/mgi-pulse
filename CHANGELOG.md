@@ -16,8 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Format sniffing on stdin.** Piped input is detected the same way as
   files, so `journalctl -o json | mgi-pulse -` needs no `--format`.
 
+- **Watch mode.** `mgi-pulse watch <sources> [--rule EXPR ...]
+  [--collapse 10m] [--format text|json]` prints only matching records,
+  collapses repeats per rule, source and digit-normalised message, and
+  takes sources and rules from a TOML file with `--config`. Works on
+  files, stdin and the journal; `--once` scans and exits.
+
 ### Fixed
 
+- `--follow` on Windows re-read the whole file after every append: the
+  rotation check used the file length as the inode stand-in, so growth
+  looked like a rotation. The file creation time is used instead.
 - Journal detection looked for `__REALTIME_TIMESTAMP` only in the first
   512 bytes; real entries put it past byte 1000. The window is 4 KiB now.
 - CI: `cargo fmt` and the clippy lints added after Rust 1.83.

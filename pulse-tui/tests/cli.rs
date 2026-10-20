@@ -279,3 +279,69 @@ fn mostly_plain_minority_json_falls_into_less_mode() {
         .stdout(contains("indexed 7 records"))
         .stdout(contains("untimed: 7"));
 }
+
+#[test]
+fn watch_once_prints_only_errors() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args(["watch", "--once"])
+        .arg(fixture("structured.ndjson"))
+        .assert()
+        .success()
+        .stdout(
+            "2026-06-01T12:00:02.000Z error structured.ndjson [errors] boom
+",
+        );
+}
+
+#[test]
+fn watch_reads_journal_json_from_stdin_and_collapses() {
+    let mut input = String::new();
+    for i in 0..5 {
+        input.push_str(&format!(
+            "{{\"__REALTIME_TIMESTAMP\":\"17172354{i}0000000\",\"PRIORITY\":\"3\",\"MESSAGE\":\"disk {i} failed\",\"_SYSTEMD_UNIT\":\"raid.service\"}}
+"
+        ));
+    }
+    input.push_str(
+        "{\"__REALTIME_TIMESTAMP\":\"1717235499000000\",\"PRIORITY\":\"6\",\"MESSAGE\":\"fine\"}
+",
+    );
+    let out = Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args([
+            "watch",
+            "-",
+            "--format",
+            "json",
+            "--rule",
+            "unit=raid.service",
+        ])
+        .write_stdin(input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let lines: Vec<serde_json::Value> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!(lines[0]["type"], "match");
+    assert_eq!(lines[0]["msg"], "disk 0 failed");
+    assert_eq!(lines[1]["type"], "repeat");
+    assert_eq!(lines[1]["count"], 4);
+}
+
+#[test]
+fn watch_bad_rule_exits_nonzero() {
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args(["watch", "--once", "--rule", "(level=error"])
+        .arg(fixture("structured.ndjson"))
+        .assert()
+        .failure()
+        .stderr(contains("rule `rule1`"));
+}

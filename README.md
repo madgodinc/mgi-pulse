@@ -265,6 +265,69 @@ continues from it, so nothing lands twice and nothing goes missing in
 between. Piped journal output is detected too:
 `journalctl -o json -u api | mgi-pulse -`.
 
+## Watch mode
+
+`mgi-pulse watch` runs without a terminal and prints only the records
+that match a rule. Rules are the same query DSL the TUI uses. Repeats
+of one message collapse into a single count, so a crash loop prints
+two lines instead of two thousand.
+
+```sh
+mgi-pulse watch app.log                          # errors and fatals, follow
+mgi-pulse watch app.log --rule 'msg~/timeout/' --rule 'level=error'
+mgi-pulse watch --journal -u api -u nginx --collapse 5m
+kubectl logs -f deploy/api | mgi-pulse watch - --format json
+mgi-pulse watch --once --since 1h app.log        # scan and exit
+```
+
+```text
+2026-06-01T12:00:02.000Z error api.log [rule1] upstream timeout after 30s
+2026-06-01T12:10:02.000Z error api.log [rule1] +41 more in 10m: upstream timeout after 30s
+```
+
+- Without `--rule`, error and fatal records match. With several rules,
+  the first one that matches a record names it.
+- `--collapse` (default `10m`, `0` turns it off) groups repeats by rule,
+  source and message, with digits ignored: `retry 3 failed` and
+  `retry 4 failed` count as one message.
+- Files are followed from their current end; `--from-start` reads the
+  existing content first, and `--once` reads it and exits. With
+  `--once` the collapse window runs on record timestamps, so last
+  night's burst collapses the way it would have live.
+- `--format json` prints one object per line: `{"type":"match", ...}`
+  for a record, `{"type":"repeat","count":41, ...}` for a closed window.
+- The exit code is non-zero only for fatal errors: a bad rule, a missing
+  file, no `journalctl`. A closed stdout (`| head`) ends the watch
+  quietly.
+
+Sources and rules can live in a TOML file instead of flags:
+
+```toml
+# pulse.toml
+collapse = "10m"
+output = "text"
+
+[[source]]
+name = "api"
+path = "/var/log/api/app.ndjson"   # relative paths resolve next to this file
+
+[[source]]
+name = "web"
+journal = ["nginx.service"]        # [] reads the whole journal
+
+[[rule]]
+name = "timeouts"
+query = "msg~/timeout/"
+
+[[rule]]
+name = "errors"
+query = "level=error OR level=fatal"
+```
+
+```sh
+mgi-pulse watch --config pulse.toml
+```
+
 ## Bookmarks persistence
 
 `b` toggles a bookmark on the focused row, `B` cycles through them. For
@@ -290,7 +353,7 @@ key on.
   Predicates re-scan the index on each filter change. Sub-second on
   2 GB / 11 M records (i5-12400F); minutes on 100 GB.
 - **Remote / multi-host / persistence between machines.** There's no
-  daemon and no on-disk index. If you need to correlate across a
+  on-disk index, and `watch` follows one machine's files and journal. If you need to correlate across a
   fleet, you want Loki, Vector, an OTEL collector, not this.
 - **Windows-native rotation handling.** The follow worker's inode
   check falls back to file size on non-Unix platforms; copytruncate

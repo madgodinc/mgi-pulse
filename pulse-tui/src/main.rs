@@ -8,12 +8,15 @@
 
 mod app;
 mod bookmarks_store;
+mod collapse;
+mod config;
 mod ingest;
 mod journal;
 mod panes;
+mod sources;
 mod theme;
-#[allow(dead_code)]
 mod util;
+mod watch;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -34,8 +37,11 @@ use mgi_pulse_core::engine::Engine;
 /// gets truncated under us delivers SIGBUS (kills the process), which
 /// the stream path avoids by using owned buffers.
 #[derive(Debug, Parser)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, args_conflicts_with_subcommands = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// NDJSON file to open. Use `-` for stdin.
     /// If neither is given and stdin is a TTY, usage is printed and the
     /// process exits — never block silently waiting on a terminal.
@@ -122,6 +128,13 @@ struct Cli {
     since: Option<String>,
 }
 
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Print only records that match rules, with repeats collapsed.
+    /// Runs without a terminal; exits non-zero only on fatal errors.
+    Watch(watch::WatchArgs),
+}
+
 fn main() -> ExitCode {
     if let Err(e) = run() {
         eprintln!("mgi-pulse: {e:#}");
@@ -134,6 +147,11 @@ fn run() -> Result<()> {
     init_tracing();
 
     let cli = Cli::parse();
+    if let Some(cmd) = cli.command {
+        return match cmd {
+            Command::Watch(args) => watch::run(args),
+        };
+    }
 
     // Validate --theme up front so a typo fails before we do any work.
     let theme = match cli.theme.as_deref() {

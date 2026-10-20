@@ -125,7 +125,7 @@ impl TailReader {
             new_meta.ino()
         };
         #[cfg(not(unix))]
-        let new_inode = new_meta.len();
+        let new_inode = identity_of(&new_meta);
         let new_size = new_meta.len();
 
         // rename/create: inode changes → fresh file, start from 0.
@@ -158,9 +158,23 @@ fn inode_of(file: &File) -> io::Result<u64> {
     Ok(file.metadata()?.ino())
 }
 
+/// No stable inode outside Unix. The creation time changes when a
+/// rotation renames the file away and a new one is created, and unlike
+/// the length it does not change on every append (using the length
+/// made each EOF after new data look like a rotation, and the whole
+/// file was read again).
 #[cfg(not(unix))]
 fn inode_of(file: &File) -> io::Result<u64> {
-    Ok(file.metadata()?.len())
+    Ok(identity_of(&file.metadata()?))
+}
+
+#[cfg(not(unix))]
+fn identity_of(meta: &std::fs::Metadata) -> u64 {
+    meta.created()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 impl Read for TailReader {
@@ -295,6 +309,25 @@ mod tests {
         consume_all_available(&mut tail, &mut buf);
         assert_eq!(&buf, b"fresh\n");
 
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn growth_is_not_mistaken_for_rotation() {
+        let p = tmp_path("growth");
+        std::fs::write(&p, b"one\n").unwrap();
+        let mut tail = TailReader::open_from_start(&p).unwrap();
+        let mut sink = Vec::new();
+        consume_all_available(&mut tail, &mut sink);
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            f.write_all(b"two\n").unwrap();
+        }
+        sink.clear();
+        consume_all_available(&mut tail, &mut sink);
+        assert_eq!(&sink, b"two\n");
+        assert!(!tail.check_rotation().unwrap(), "append is not a rotation");
         let _ = std::fs::remove_file(&p);
     }
 
