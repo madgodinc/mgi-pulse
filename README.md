@@ -222,8 +222,9 @@ mgi-pulse --follow live.log
 #    case across every Unix.
 tail -F live.log | mgi-pulse -
 
-# 3. journalctl, kubectl logs, docker logs — same shape, stdin.
-journalctl -u myapp -f -o json | mgi-pulse --format=journalctl -
+# 3. kubectl logs, docker logs and friends: same shape, stdin.
+#    For the journal, prefer `mgi-pulse --journal -u myapp -f`.
+kubectl logs -f deploy/api | mgi-pulse -
 ```
 
 A note on `mmap` and live files: `mgi-pulse` mmaps plain files for the
@@ -232,6 +233,37 @@ you're viewing it will deliver SIGBUS — Unix mechanic, not a Rust error,
 not catchable. So **don't open an actively-rotating file with `mgi-pulse
 app.log` directly**; use one of the three options above. Static log
 snapshots (`app.log.1`, archived dates) are fine.
+
+## systemd journal
+
+`--journal` reads the journal directly through `journalctl -o json`, so
+there is nothing to link against and the binary stays the same on every
+platform. It needs `journalctl` on the PATH, which in practice means
+Linux with systemd; elsewhere it exits with a message saying so.
+
+```sh
+mgi-pulse --journal                          # current boot
+mgi-pulse --journal -u nginx -u api --since 2h
+mgi-pulse --journal -u api --since today -f  # backfill, then follow
+```
+
+`--since` takes an age (`30m`, `2h`, `1d`), an RFC3339 time, or anything
+`journalctl --since` understands. Without it you get the current boot.
+`PRIORITY` maps to the severity tabs (0-2 fatal, 3 error, 4 warn, 5-6
+info, 7 debug), `__REALTIME_TIMESTAMP` drives the timeline, and every
+journal field stays queryable: `unit`, `host` and `ident` are short
+aliases for `_SYSTEMD_UNIT`, `_HOSTNAME` and `SYSLOG_IDENTIFIER`, and
+`_PID`, `_COMM` and the rest work under their own names.
+
+```text
+unit=nginx.service AND level=error
+_PID=4121 AND msg~/oom/
+```
+
+Follow mode remembers the cursor of the last backfilled entry and
+continues from it, so nothing lands twice and nothing goes missing in
+between. Piped journal output is detected too:
+`journalctl -o json -u api | mgi-pulse -`.
 
 ## Bookmarks persistence
 

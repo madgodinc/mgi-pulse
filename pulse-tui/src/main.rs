@@ -8,25 +8,23 @@
 
 mod app;
 mod bookmarks_store;
+mod ingest;
+mod journal;
 mod panes;
 mod theme;
+#[allow(dead_code)]
+mod util;
 
-use std::io::{self, BufReader, IsTerminal};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
+use ingest::{detect_format_from_files, ingest_file, ingest_merged, ingest_stdin};
 use mgi_pulse_core::engine::format::LogFormat;
 use mgi_pulse_core::engine::parse::FieldNames;
-use mgi_pulse_core::engine::{indexer, Engine};
-use mgi_pulse_core::io::compressed::{open_decompressed, Compression};
-use mgi_pulse_core::io::file::FileProducer;
-use mgi_pulse_core::io::merge::MergeProducer;
-use mgi_pulse_core::io::multiline::MultiLineProducer;
-use mgi_pulse_core::io::stream::StreamProducer;
-use mgi_pulse_core::io::RecordProducer;
+use mgi_pulse_core::engine::Engine;
 
 /// mgi-pulse — not browse logs, navigate them.
 ///
@@ -106,6 +104,22 @@ struct Cli {
     /// `--pattern='(?P<ts>\d{4}-\d{2}-\d{2}\s[\d:]+)\s+(?P<level>\w+)\s+(?P<msg>.*)'`
     #[arg(long, value_name = "REGEX")]
     pattern: Option<String>,
+
+    /// Read the systemd journal through `journalctl -o json` instead of
+    /// a file. Linux only. Combine with `-u` and `--since`; `--follow`
+    /// keeps streaming new entries.
+    #[arg(long, default_value_t = false)]
+    journal: bool,
+
+    /// Journal unit to read (repeatable). Only with `--journal`.
+    #[arg(short = 'u', long = "unit", value_name = "UNIT")]
+    units: Vec<String>,
+
+    /// Start of the journal window: an age (`2h`, `1d`), an RFC3339
+    /// time, or anything `journalctl --since` accepts. Without it the
+    /// journal is read from the start of the current boot.
+    #[arg(long, value_name = "WHEN")]
+    since: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -134,7 +148,14 @@ fn run() -> Result<()> {
     // we're in alt-screen the tty check is meaningless.
     let theme = theme::Theme::env_override(std::io::stdout().is_terminal()).unwrap_or(theme);
 
-    if cli.files.is_empty() && std::io::stdin().is_terminal() {
+    if !cli.journal && (!cli.units.is_empty() || cli.since.is_some()) {
+        anyhow::bail!("-u/--unit and --since apply to --journal only");
+    }
+    if cli.journal && !cli.files.is_empty() {
+        anyhow::bail!("--journal reads the journal; drop the file arguments");
+    }
+
+    if !cli.journal && cli.files.is_empty() && std::io::stdin().is_terminal() {
         eprintln!(
             "mgi-pulse: no input.\n\
              usage:\n  \
@@ -147,24 +168,11 @@ fn run() -> Result<()> {
 
     // Resolve --format flag → LogFormat. Auto-detect (None) is the v0.2
     // story; for v0.1.x the flag is the only way to pick logfmt.
-    let forced_format = match cli.format.as_deref() {
-        None => None,
-        Some("ndjson") => Some(LogFormat::Ndjson),
-        Some("logfmt") => Some(LogFormat::Logfmt),
-        Some("edn") => Some(LogFormat::Edn),
-        Some("python") => Some(LogFormat::Python),
-        Some("syslog") => Some(LogFormat::Syslog),
-        Some("csv") => Some(LogFormat::Csv),
-        Some("tsv") => Some(LogFormat::Tsv),
-        Some("access") => Some(LogFormat::Access),
-        Some("logback") | Some("log4j") | Some("java") => Some(LogFormat::Logback),
-        Some("journalctl") | Some("journal") | Some("systemd") => Some(LogFormat::Journalctl),
-        Some("regex") => Some(LogFormat::Regex),
-        Some(other) => anyhow::bail!(
-            "unknown --format value '{}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access, logback, journalctl, regex",
-            other
-        ),
-    };
+    let forced_format = cli
+        .format
+        .as_deref()
+        .map(ingest::parse_format)
+        .transpose()?;
 
     // Build the override field-names from CLI flags. Defaults to None so
     // the fast hardcoded path is used unless a flag was passed.
@@ -219,9 +227,24 @@ fn run() -> Result<()> {
         None => detect_format_from_files(&cli.files).unwrap_or(LogFormat::Ndjson),
     };
 
-    if cli.files.is_empty() {
+    // Live journal entries arrive on this channel when following.
+    let mut journal_live = None;
+
+    if cli.journal {
+        let query = journal::Query {
+            units: cli.units.clone(),
+            since: cli.since.as_deref().map(journal::since_arg),
+            boot: cli.since.is_none(),
+            ..Default::default()
+        };
+        source_label = query.label();
+        let cursor = journal::ingest(&query, &mut engine)?;
+        if cli.follow {
+            journal_live = Some(journal::spawn_follow(query, cursor));
+        }
+    } else if cli.files.is_empty() {
         source_label = "<stdin>".to_string();
-        ingest_stdin(&mut engine, fields.clone(), fmt)?;
+        ingest_stdin(&mut engine, fields.clone(), forced_format)?;
     } else {
         // Single file: fast path that keeps line_id == arrival order.
         // Multiple files: k-way merge by ts_micros — line_id becomes
@@ -237,7 +260,7 @@ fn run() -> Result<()> {
             let path = &cli.files[0];
             if path.as_os_str() == "-" {
                 source_label = "<stdin>".to_string();
-                ingest_stdin(&mut engine, fields.clone(), fmt)?;
+                ingest_stdin(&mut engine, fields.clone(), forced_format)?;
             } else if cli.follow {
                 // Two-phase follow:
                 //   1. Synchronous backfill from disk so the UI opens
@@ -334,13 +357,8 @@ fn run() -> Result<()> {
         return Ok(());
     }
 
-    let app = app::App::new_with_source(
-        engine,
-        source_label,
-        cli.columns,
-        theme,
-        single_source_path,
-    );
+    let app =
+        app::App::new_with_source(engine, source_label, cli.columns, theme, single_source_path);
     // Wire the follow worker if requested. The channel buffer (8192)
     // absorbs short read bursts so the worker doesn't block on a slow
     // UI tick. Worker drops out on producer EOF (e.g. file truncated
@@ -349,6 +367,8 @@ fn run() -> Result<()> {
     let app = if let Some(plan) = pending_follow {
         let (tx, rx) = crossbeam_channel::bounded(8192);
         spawn_follow_worker(plan, tx);
+        app.with_live(rx)
+    } else if let Some(rx) = journal_live {
         app.with_live(rx)
     } else {
         app
@@ -372,9 +392,9 @@ fn spawn_follow_worker(
     plan: FollowPlan,
     tx: crossbeam_channel::Sender<mgi_pulse_core::engine::record::RawRecord>,
 ) {
+    use mgi_pulse_core::io::stream::StreamProducer;
     use mgi_pulse_core::io::tail::TailReader;
     use mgi_pulse_core::io::RecordProducer;
-    use mgi_pulse_core::io::stream::StreamProducer;
 
     std::thread::Builder::new()
         .name("mgi-pulse-follow".into())
@@ -414,224 +434,6 @@ fn spawn_follow_worker(
             }
         })
         .ok();
-}
-
-/// Read a small probe from the first file and let `LogFormat::detect`
-/// vote on its shape. Returns `None` when the input is stdin-only, the
-/// file is empty, or none of the format signatures match.
-///
-/// Probe size: up to 16 KiB or 64 newline-terminated lines, whichever
-/// ends first. Anything bigger is unnecessary — the detect heuristic
-/// hits a stable verdict well before that, and we don't want a huge
-/// log to slow down `mgi-pulse` startup just to make a format guess.
-fn detect_format_from_files(files: &[PathBuf]) -> Option<LogFormat> {
-    let path = files.iter().find(|p| p.as_os_str() != "-")?;
-    let bytes = read_probe(path, 16 * 1024).ok()?;
-    if bytes.is_empty() {
-        return None;
-    }
-    // JSON-array files have one logical record per element but are
-    // packed on one or two lines; the standard newline-splitter would
-    // give the heuristic a single giant "line" loaded with commas and
-    // mis-vote CSV. The ingest path flattens them to real NDJSON
-    // before indexing, so report Ndjson here.
-    if mgi_pulse_core::io::json_array::looks_like_json_array(&bytes) {
-        return Some(LogFormat::Ndjson);
-    }
-    // Take up to 64 newline-terminated lines from the probe. Strip
-    // trailing CR for CRLF inputs.
-    let lines: Vec<&[u8]> = bytes
-        .split(|&b| b == b'\n')
-        .take(64)
-        .map(|l| match l.last() {
-            Some(&b'\r') => &l[..l.len() - 1],
-            _ => l,
-        })
-        .filter(|l| !l.is_empty())
-        .collect();
-    if lines.is_empty() {
-        return None;
-    }
-    Some(LogFormat::detect(&lines))
-}
-
-fn read_probe(path: &PathBuf, max_bytes: usize) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut buf = vec![0u8; max_bytes];
-    let n = f.read(&mut buf)?;
-    buf.truncate(n);
-    Ok(buf)
-}
-
-fn ingest_file(
-    path: &PathBuf,
-    engine: &mut Engine,
-    fields: Option<FieldNames>,
-    fmt: LogFormat,
-) -> Result<()> {
-    let t0 = Instant::now();
-    // Magic-byte sniff first: gzip and zstd take the stream path because
-    // the decompressor doesn't give us mmap, and we'd rather not buffer
-    // 6-8 GB of decompressed NDJSON in RAM up-front.
-    let mut probe =
-        std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let compression = Compression::detect(&mut probe)?;
-    drop(probe);
-
-    if compression != Compression::None {
-        let (_, reader) = open_decompressed(path)?;
-        let mut producer = StreamProducer::new(reader, 0);
-        if let Some(f) = fields {
-            producer = producer.with_fields(f);
-        }
-        producer = producer.with_format(fmt);
-        engine.source_formats.push(fmt);
-        // Multi-line wrapper folds `^\s+` continuation lines into the
-        // preceding record for formats that support it (logfmt, EDN).
-        let mut multiline = MultiLineProducer::new(producer, fmt);
-        indexer::drain(&mut multiline, engine);
-        let dt = t0.elapsed();
-        tracing::info!(
-            path = %path.display(),
-            compression = ?compression,
-            records = engine.indexes.len(),
-            elapsed_ms = dt.as_millis() as u64,
-            "indexed compressed file"
-        );
-        return Ok(());
-    }
-
-    // JSON-array adapter: if the file's first non-whitespace bytes are
-    // `[{`, load it into memory, flatten to NDJSON, and stream through
-    // the existing StreamProducer path. Caps at ~256 MB to avoid OOM
-    // on huge exports — bigger files should pipe through `jq -c '.[]'`.
-    {
-        let mut head = [0u8; 16];
-        let mut f = std::fs::File::open(path)
-            .with_context(|| format!("open {}", path.display()))?;
-        use std::io::Read;
-        let n = f.read(&mut head).unwrap_or(0);
-        drop(f);
-        if mgi_pulse_core::io::json_array::looks_like_json_array(&head[..n]) {
-            let raw = std::fs::read(path)
-                .with_context(|| format!("read {}", path.display()))?;
-            // 64 MB cap. The naive serde_json::Value flatten path
-            // explodes to 3-5× the raw size in resident memory (plus
-            // the re-serialised NDJSON buffer); 64 MB raw lands at
-            // roughly 250-400 MB RSS which is the most we want to
-            // pay for an "I'm opening a JSON dump" convenience.
-            // Bigger files: `jq -c '.[]' file.json | mgi-pulse -`.
-            if raw.len() > 64 * 1024 * 1024 {
-                anyhow::bail!(
-                    "JSON-array file is over 64 MB; the in-memory flatten \
-                     path would balloon to several GB of RSS. Pipe through \
-                     `jq -c '.[]' <file> | mgi-pulse -` instead."
-                );
-            }
-            let ndjson = mgi_pulse_core::io::json_array::flatten_to_ndjson(&raw)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let reader = std::io::Cursor::new(ndjson);
-            let mut producer = StreamProducer::new(reader, 0);
-            if let Some(f) = fields {
-                producer = producer.with_fields(f);
-            }
-            producer = producer.with_format(fmt);
-            engine.source_formats.push(fmt);
-            let mut multiline = MultiLineProducer::new(producer, fmt);
-            indexer::drain(&mut multiline, engine);
-            let dt = t0.elapsed();
-            tracing::info!(
-                path = %path.display(),
-                records = engine.indexes.len(),
-                elapsed_ms = dt.as_millis() as u64,
-                "indexed JSON array"
-            );
-            return Ok(());
-        }
-    }
-
-    let mut producer =
-        FileProducer::open(path, 0).with_context(|| format!("open {}", path.display()))?;
-    if let Some(f) = fields {
-        producer = producer.with_fields(f);
-    }
-    producer = producer.with_format(fmt);
-    engine.mmaps.push(producer.mmap());
-    engine.source_formats.push(fmt);
-    let total_bytes = producer.total_bytes();
-    indexer::drain(&mut producer, engine);
-    engine.indexes.parse_stats.fold(producer.stats());
-    let dt = t0.elapsed();
-    tracing::info!(
-        path = %path.display(),
-        bytes = total_bytes,
-        records = engine.indexes.len(),
-        elapsed_ms = dt.as_millis() as u64,
-        "indexed file"
-    );
-    Ok(())
-}
-
-fn ingest_merged(
-    paths: &[PathBuf],
-    engine: &mut Engine,
-    fields: Option<FieldNames>,
-    fmt: LogFormat,
-) -> Result<()> {
-    let t0 = Instant::now();
-    let mut producers: Vec<Box<dyn RecordProducer>> = Vec::with_capacity(paths.len());
-    let mut total_bytes: u64 = 0;
-    for (i, path) in paths.iter().enumerate() {
-        let mut producer = FileProducer::open(path, i as u32)
-            .with_context(|| format!("open {}", path.display()))?;
-        if let Some(f) = fields.clone() {
-            producer = producer.with_fields(f);
-        }
-        producer = producer.with_format(fmt);
-        engine.mmaps.push(producer.mmap());
-        engine.source_formats.push(fmt);
-        total_bytes += producer.total_bytes();
-        producers.push(Box::new(producer));
-    }
-    let mut merge = MergeProducer::new(producers);
-    indexer::drain(&mut merge, engine);
-    // Per-producer stats are inside the boxed producers and have been
-    // consumed by the merge. The merge does not yet expose folded stats —
-    // they're not surfaced separately for now. Backlog: fold-on-drop.
-    let dt = t0.elapsed();
-    tracing::info!(
-        sources = paths.len(),
-        bytes = total_bytes,
-        records = engine.indexes.len(),
-        elapsed_ms = dt.as_millis() as u64,
-        "indexed merged sources"
-    );
-    Ok(())
-}
-
-fn ingest_stdin(engine: &mut Engine, fields: Option<FieldNames>, fmt: LogFormat) -> Result<()> {
-    let t0 = Instant::now();
-    let stdin = io::stdin();
-    let reader = BufReader::new(stdin.lock());
-    let mut producer = StreamProducer::new(reader, 0);
-    if let Some(f) = fields {
-        producer = producer.with_fields(f);
-    }
-    producer = producer.with_format(fmt);
-    engine.source_formats.push(fmt);
-    // The stream path doesn't use mmaps; engine.mmaps stays empty. The
-    // renderer routes stream rows through `owned_lines` and never touches
-    // mmaps[source_id], so a missing entry is fine here.
-    let mut multiline = MultiLineProducer::new(producer, fmt);
-    indexer::drain(&mut multiline, engine);
-    let dt = t0.elapsed();
-    tracing::info!(
-        records = engine.indexes.len(),
-        elapsed_ms = dt.as_millis() as u64,
-        "indexed stream"
-    );
-    Ok(())
 }
 
 fn init_tracing() {

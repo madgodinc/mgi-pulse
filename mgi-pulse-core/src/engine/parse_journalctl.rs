@@ -125,8 +125,10 @@ pub fn looks_like_journalctl(line: &[u8]) -> bool {
         return false;
     }
     // Bound the search so a giant JSON blob doesn't sweep the whole
-    // line on every detect tick.
-    let window = &line[..line.len().min(512)];
+    // line on every detect tick. Real journal entries carry 1-2 KB of
+    // trusted `_`-fields, and `__REALTIME_TIMESTAMP` often sits past
+    // byte 1000, so the window has to cover a whole typical entry.
+    let window = &line[..line.len().min(4096)];
     contains_subslice(window, b"__REALTIME_TIMESTAMP") || contains_subslice(window, b"\"PRIORITY\"")
 }
 
@@ -201,6 +203,15 @@ mod tests {
             br#"{"__REALTIME_TIMESTAMP":"1000","MESSAGE":"x"}"#
         ));
         assert!(looks_like_journalctl(br#"{"PRIORITY":"6","MESSAGE":"x"}"#));
+    }
+
+    #[test]
+    fn looks_like_journalctl_finds_keys_deep_in_the_entry() {
+        let padding = "x".repeat(1200);
+        let line = format!(
+            r#"{{"_SYSTEMD_CGROUP":"{padding}","__REALTIME_TIMESTAMP":"1","MESSAGE":"x"}}"#
+        );
+        assert!(looks_like_journalctl(line.as_bytes()));
     }
 
     #[test]

@@ -5,6 +5,23 @@ All notable changes to mgi-pulse will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **systemd journal source.** `--journal [-u UNIT ...] [--since WHEN]
+  [--follow]` runs `journalctl -o json` as a subprocess (no libsystemd
+  link, so non-Linux builds are unchanged). Follow continues from the
+  last backfilled cursor.
+- **Format sniffing on stdin.** Piped input is detected the same way as
+  files, so `journalctl -o json | mgi-pulse -` needs no `--format`.
+
+### Fixed
+
+- Journal detection looked for `__REALTIME_TIMESTAMP` only in the first
+  512 bytes; real entries put it past byte 1000. The window is 4 KiB now.
+- CI: `cargo fmt` and the clippy lints added after Rust 1.83.
+
 ## [0.3.0] - 2026-06-03
 
 Adds seven log formats (eleven total), native `--follow`, timeline

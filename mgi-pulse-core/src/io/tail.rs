@@ -14,6 +14,8 @@
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
@@ -29,6 +31,9 @@ pub struct TailReader {
     /// current size drops below this position, the file was truncated
     /// in place and we have to re-open and seek to 0.
     read_pos: u64,
+    /// When set, a read that would block on EOF returns end-of-stream
+    /// instead, so a worker thread can be shut down from outside.
+    stop: Option<Arc<AtomicBool>>,
 }
 
 impl TailReader {
@@ -44,6 +49,7 @@ impl TailReader {
             reader: BufReader::with_capacity(64 * 1024, file),
             inode,
             read_pos: end,
+            stop: None,
         })
     }
 
@@ -59,7 +65,21 @@ impl TailReader {
             reader: BufReader::with_capacity(64 * 1024, file),
             inode,
             read_pos: 0,
+            stop: None,
         })
+    }
+
+    /// Make EOF waits end once `stop` is set: the next blocked read
+    /// reports end-of-stream (`Ok(0)`).
+    pub fn with_stop(mut self, stop: Arc<AtomicBool>) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    fn stopped(&self) -> bool {
+        self.stop
+            .as_ref()
+            .is_some_and(|s| s.load(Ordering::Relaxed))
     }
 
     /// Check whether the underlying file has been rotated since the
@@ -164,6 +184,9 @@ impl Read for TailReader {
             if self.check_rotation()? {
                 continue;
             }
+            if self.stopped() {
+                return Ok(0);
+            }
             std::thread::sleep(POLL_INTERVAL);
         }
     }
@@ -178,6 +201,9 @@ impl BufRead for TailReader {
             }
             if self.check_rotation()? {
                 continue;
+            }
+            if self.stopped() {
+                return self.reader.fill_buf();
             }
             std::thread::sleep(POLL_INTERVAL);
         }
@@ -240,7 +266,11 @@ mod tests {
         // path StreamProducer uses).
         let mut buf = Vec::new();
         let line_count = consume_all_available(&mut tail, &mut buf);
-        assert!(line_count >= 2, "expected at least 2 lines, got {}", line_count);
+        assert!(
+            line_count >= 2,
+            "expected at least 2 lines, got {}",
+            line_count
+        );
         // read_pos is now == file size; rotation check should report
         // "no rotation" while everything matches.
         assert!(!tail.check_rotation().unwrap());
@@ -265,6 +295,27 @@ mod tests {
         consume_all_available(&mut tail, &mut buf);
         assert_eq!(&buf, b"fresh\n");
 
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn stop_flag_ends_a_blocked_read() {
+        let p = tmp_path("stop");
+        std::fs::write(&p, b"one\n").unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut tail = TailReader::open_from_start(&p)
+            .unwrap()
+            .with_stop(stop.clone());
+        let mut line = Vec::new();
+        assert_eq!(tail.read_until(b'\n', &mut line).unwrap(), 4);
+        let flag = stop.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        line.clear();
+        assert_eq!(tail.read_until(b'\n', &mut line).unwrap(), 0);
+        t.join().unwrap();
         let _ = std::fs::remove_file(&p);
     }
 
