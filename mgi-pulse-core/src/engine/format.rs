@@ -66,6 +66,11 @@ pub enum LogFormat {
     /// other group become projectable fields. Lets users open any
     /// plain-text log by supplying `--pattern='...'`.
     Regex,
+    /// Plain text in the common "timestamp LEVEL message" shapes
+    /// (ISO or slash dates, Go log, nginx error log, Python
+    /// `LEVEL:logger:msg`). The fallback when nothing more specific
+    /// matches; see `parse_plain`.
+    Plain,
 }
 
 impl LogFormat {
@@ -113,6 +118,7 @@ impl LogFormat {
                 stats.untimed += 1;
                 (TS_UNTIMED, severity::UNKNOWN)
             }
+            LogFormat::Plain => crate::engine::parse_plain::ts_and_level(line, stats, fields),
         }
     }
 
@@ -160,6 +166,9 @@ impl LogFormat {
             // is the proper entry point. Returning None here lets
             // unwired predicates fail closed.
             LogFormat::Regex => None,
+            LogFormat::Plain => {
+                crate::engine::parse_plain::project_field(line, key).map(std::borrow::Cow::Owned)
+            }
         }
     }
 
@@ -207,6 +216,7 @@ impl LogFormat {
             // can't tell. Default to "no continuation"; future work
             // could thread the pattern in.
             LogFormat::Regex => false,
+            LogFormat::Plain => crate::engine::parse_plain::is_continuation(line),
         }
     }
 
@@ -227,6 +237,9 @@ impl LogFormat {
             | LogFormat::Logback
             | LogFormat::Journalctl
             | LogFormat::Regex => severity::from_bytes(level.as_bytes()),
+            LogFormat::Plain => {
+                crate::engine::parse_plain::level_of(level).unwrap_or(severity::UNKNOWN)
+            }
         }
     }
 
@@ -245,7 +258,8 @@ impl LogFormat {
             | LogFormat::Access
             | LogFormat::Logback
             | LogFormat::Journalctl
-            | LogFormat::Regex => parse_rfc3339_micros(s),
+            | LogFormat::Regex
+            | LogFormat::Plain => parse_rfc3339_micros(s),
         }
     }
 
@@ -300,11 +314,14 @@ impl LogFormat {
         let mut access_votes = 0;
         let mut logback_votes = 0;
         let mut journalctl_votes = 0;
+        let mut plain_votes = 0;
+        let mut nonempty = 0;
         for line in first_lines {
             let trimmed = trim_ascii(line);
             if trimmed.is_empty() {
                 continue;
             }
+            nonempty += 1;
             // Syslog 5424 signature first — `<DIGITS>1 ` is unambiguous
             // and a syslog line never starts with `{` or contains the
             // `key=value` shape that would fool logfmt.
@@ -346,6 +363,14 @@ impl LogFormat {
                 ndjson_votes += 1;
                 continue;
             }
+            // Plain "timestamp LEVEL message" before logfmt and CSV: a
+            // message with `k=v` pairs or commas would otherwise vote
+            // for those. Logfmt lines start with `key=`, never with a
+            // timestamp or a level word, so they don't vote here.
+            if crate::engine::parse_plain::looks_like_plain(trimmed) {
+                plain_votes += 1;
+                continue;
+            }
             if logfmt_signature(trimmed) {
                 logfmt_votes += 1;
                 continue;
@@ -375,10 +400,14 @@ impl LogFormat {
         {
             LogFormat::Access
         } else if logback_votes >= 2
+            && plain_votes == 0
             && logback_votes > ndjson_votes
             && logback_votes > logfmt_votes
             && logback_votes > edn_votes
         {
+            // Any plain-only line in the probe hands the file to the
+            // plain parser, which also reads logback lines; otherwise
+            // those other lines would stay untimed and levelless.
             LogFormat::Logback
         } else if journalctl_votes >= 2
             && journalctl_votes > ndjson_votes
@@ -391,6 +420,17 @@ impl LogFormat {
             LogFormat::Logfmt
         } else if ndjson_votes >= 2 {
             LogFormat::Ndjson
+        } else if plain_votes + logback_votes > 0
+            && (plain_votes + logback_votes >= 2 || plain_votes + logback_votes == nonempty)
+            && plain_votes + logback_votes > logfmt_votes
+            && plain_votes + logback_votes > csv_votes
+            && plain_votes + logback_votes > tsv_votes
+        {
+            // Logback-shaped lines count here too: the plain parser
+            // reads them, and a mixed file should not end up as JSON.
+            // A one-line probe is enough when that line is plain text:
+            // NDJSON would only produce parse errors for it.
+            LogFormat::Plain
         } else if tsv_votes >= 2 && tsv_votes > csv_votes {
             LogFormat::Tsv
         } else if csv_votes >= 2 {
@@ -679,6 +719,50 @@ mod tests {
             b"2026-06-01T12:00:01Z,error,host02,oops",
         ];
         assert_eq!(LogFormat::detect(&lines), LogFormat::Csv);
+    }
+
+    #[test]
+    fn detect_falls_back_to_plain_for_timestamp_level_text() {
+        let lines: Vec<&[u8]> = vec![
+            b"2026-10-21T02:30:00+03:00 ERROR pulse: plain line",
+            b"2026-10-21 02:30:01,123 ERROR [main] pulse: log4j style user=bob, id=7",
+        ];
+        assert_eq!(LogFormat::detect(&lines), LogFormat::Plain);
+        let nginx: Vec<&[u8]> = vec![
+            b"2026/10/21 02:30:03 [error] 1234#0: *5 connect() failed",
+            b"2026/10/21 02:30:04 [warn] 1234#0: *6 upstream slow",
+        ];
+        assert_eq!(LogFormat::detect(&nginx), LogFormat::Plain);
+        let python: Vec<&[u8]> = vec![b"ERROR:root:boom", b"INFO:app:ok"];
+        assert_eq!(LogFormat::detect(&python), LogFormat::Plain);
+        let one: Vec<&[u8]> = vec![b"2026-10-21 02:30:00 ERROR only line"];
+        assert_eq!(LogFormat::detect(&one), LogFormat::Plain);
+        // Mostly logback-shaped, but one ISO line: plain reads all of them.
+        let mixed: Vec<&[u8]> = vec![
+            b"2026-10-21T02:30:00+03:00 ERROR pulse: plain line",
+            b"2026-10-21 02:30:01,123 ERROR [main] pulse: log4j style",
+            b"2026-10-21 02:30:02 WARN cache: slow",
+            b"2026-10-21 02:30:03 info api: ok",
+        ];
+        assert_eq!(LogFormat::detect(&mixed), LogFormat::Plain);
+    }
+
+    #[test]
+    fn plain_does_not_steal_more_specific_formats() {
+        let logback: Vec<&[u8]> = vec![
+            b"2026-06-01 12:00:00.123 INFO  [main] com.example.App - started",
+            b"2026-06-01 12:00:01.456 ERROR [main] com.example.App - boom",
+        ];
+        assert_eq!(LogFormat::detect(&logback), LogFormat::Logback);
+        let logfmt: Vec<&[u8]> = vec![
+            b"ts=2026-06-01T12:00:00Z level=info msg=start",
+            b"ts=2026-06-01T12:00:01Z level=error msg=boom",
+        ];
+        assert_eq!(LogFormat::detect(&logfmt), LogFormat::Logfmt);
+        let json: Vec<&[u8]> = vec![br#"{"level":"info"}"#, br#"{"level":"error"}"#];
+        assert_eq!(LogFormat::detect(&json), LogFormat::Ndjson);
+        let prose: Vec<&[u8]> = vec![b"just a line", b"another line"];
+        assert_eq!(LogFormat::detect(&prose), LogFormat::Ndjson);
     }
 
     #[test]

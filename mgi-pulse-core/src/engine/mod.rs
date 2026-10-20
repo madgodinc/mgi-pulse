@@ -23,6 +23,7 @@ pub mod parse_edn;
 pub mod parse_journalctl;
 pub mod parse_logback;
 pub mod parse_logfmt;
+pub mod parse_plain;
 pub mod parse_python;
 pub mod parse_regex;
 pub mod parse_syslog;

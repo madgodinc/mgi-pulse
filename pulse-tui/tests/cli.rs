@@ -58,9 +58,9 @@ fn ecs_style_with_overrides_parses_cleanly() {
 }
 
 #[test]
-fn plain_text_falls_into_less_mode() {
-    // Every line fails the JSON parse, so the indexer counts them all as
-    // json errors and bumps the untimed counter. No auto-columns.
+fn level_tagged_text_is_plain_not_json() {
+    // `[INFO] ...` lines are read by the plain-text parser: no JSON
+    // errors, no timestamps, no auto-columns, but levels.
     Command::cargo_bin("mgi-pulse")
         .unwrap()
         .arg("--dry-run")
@@ -68,8 +68,57 @@ fn plain_text_falls_into_less_mode() {
         .assert()
         .success()
         .stdout(contains("indexed 5 records"))
-        .stdout(contains("json errors: 5"))
+        .stdout(contains("untimed: 5"))
+        .stdout(contains("json errors: 0"))
         .stdout(contains("auto-columns: []"));
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args(["watch", "--once"])
+        .arg(fixture("plain.log"))
+        .assert()
+        .success()
+        .stdout(contains("error plain.log [errors] DB timeout"));
+}
+
+#[test]
+fn timestamp_level_text_is_parsed() {
+    let dir = std::env::temp_dir().join(format!("mgi-pulse-plain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("plain.log");
+    std::fs::write(
+        &path,
+        "2026-10-21T02:30:00+03:00 ERROR pulse: plain line\n\
+         2026-10-21 02:30:01,123 ERROR [main] pulse: log4j style\n\
+         2026/10/21 02:30:02 [warn] 7#0: nginx said\n\
+         2026/10/21 02:30:03 go log line\n",
+    )
+    .unwrap();
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .arg("--dry-run")
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(contains("untimed: 0"))
+        .stdout(contains("json errors: 0"));
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args(["watch", "--once", "--from-start", "--collapse", "0"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(
+            "2026-10-20T23:30:00.000Z error plain.log [errors] plain line\n\
+             2026-10-21T02:30:01.123Z error plain.log [errors] log4j style\n",
+        );
+    Command::cargo_bin("mgi-pulse")
+        .unwrap()
+        .args(["watch", "--once", "--rule", "level=warn"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(contains("warn  plain.log [rule1] 7#0: nginx said"));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

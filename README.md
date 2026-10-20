@@ -112,6 +112,7 @@ file, `q` quits. Full keyboard reference below.
 | Apache / nginx access | `--format=access` | yes | Common + Combined Log Format. Severity from HTTP status. |
 | CSV / TSV | `--format=csv` / `tsv` | no | RFC 4180 quoting. First row is the column header. |
 | JSON array of objects | (auto) | yes | `[{...},{...}]` files are flattened to NDJSON. 64 MB cap; bigger → `jq -c '.[]'`. |
+| Plain "time LEVEL message" text | `--format=plain` | yes | ISO or `YYYY/MM/DD` times with `.`/`,` fractions and optional zone (none means UTC), levels in any case, optional `[thread]` and `logger:`. Covers Go `log`, nginx error logs, Python's `LEVEL:logger:msg`, `[WARN] ...`. |
 | Generic regex | `--pattern='...'` | no | Named captures `ts`, `level`, plus any other group, become fields. |
 | Anything else | (none) | — | Falls into less-mode: line numbers, raw payload, regex search still works. |
 

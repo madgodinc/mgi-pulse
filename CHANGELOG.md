@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model backs `e` (explain the focused record) in the TUI, `/ask` in
   the Telegram bot, and optional alert summaries.
 
+- **Plain-text format.** Lines shaped "timestamp LEVEL message"
+  (ISO or slash dates, `,`/`.` fractions, optional zone, any-case
+  levels including WARNING and CRITICAL, optional `[thread]` and
+  `logger:`), Go `log`, nginx error logs and Python's
+  `LEVEL:logger:msg` now get a time and a level instead of falling to
+  JSON errors. Detected after the specific formats; a mixed file with
+  logback-shaped and other plain lines goes to the plain parser, which
+  reads both. `--format=plain` forces it.
+
 ### Fixed
 
 - `--follow` on Windows re-read the whole file after every append: the

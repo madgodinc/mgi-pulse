@@ -30,8 +30,9 @@ pub fn parse_format(name: &str) -> Result<LogFormat> {
         "logback" | "log4j" | "java" => LogFormat::Logback,
         "journalctl" | "journal" | "systemd" => LogFormat::Journalctl,
         "regex" => LogFormat::Regex,
+        "plain" | "text" => LogFormat::Plain,
         other => anyhow::bail!(
-            "unknown --format value '{other}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access, logback, journalctl, regex"
+            "unknown --format value '{other}'; valid: ndjson, logfmt, edn, python, syslog, csv, tsv, access, logback, journalctl, regex, plain"
         ),
     })
 }
