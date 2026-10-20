@@ -288,10 +288,7 @@ fn watch_once_prints_only_errors() {
         .arg(fixture("structured.ndjson"))
         .assert()
         .success()
-        .stdout(
-            "2026-06-01T12:00:02.000Z error structured.ndjson [errors] boom
-",
-        );
+        .stdout("2026-06-01T12:00:02.000Z error structured.ndjson [errors] boom\n");
 }
 
 #[test]
@@ -299,13 +296,11 @@ fn watch_reads_journal_json_from_stdin_and_collapses() {
     let mut input = String::new();
     for i in 0..5 {
         input.push_str(&format!(
-            "{{\"__REALTIME_TIMESTAMP\":\"17172354{i}0000000\",\"PRIORITY\":\"3\",\"MESSAGE\":\"disk {i} failed\",\"_SYSTEMD_UNIT\":\"raid.service\"}}
-"
+            "{{\"__REALTIME_TIMESTAMP\":\"17172354{i}0000000\",\"PRIORITY\":\"3\",\"MESSAGE\":\"disk {i} failed\",\"_SYSTEMD_UNIT\":\"raid.service\"}}\n"
         ));
     }
     input.push_str(
-        "{\"__REALTIME_TIMESTAMP\":\"1717235499000000\",\"PRIORITY\":\"6\",\"MESSAGE\":\"fine\"}
-",
+        "{\"__REALTIME_TIMESTAMP\":\"1717235499000000\",\"PRIORITY\":\"6\",\"MESSAGE\":\"fine\"}\n",
     );
     let out = Command::cargo_bin("mgi-pulse")
         .unwrap()
